@@ -6,6 +6,8 @@
 
 演示使用 `stale-timer`：旧 lease callback 已经出队，replacement 写入后再执行旧 callback，新值被误删。scheduler 还可能复用旧 handle，所以只比较 timer handle 仍然错误。这个任务短、确定、容易用一张时序图讲清，也能承接面试中的状态一致性追问。
 
+固定提交 `b537d34` 已完成五次真实运行：五次都在预算内结束，四次通过 hidden grader，耗时 p50 为 45.8 秒、p95 为 63.1 秒。视频展示一个真实成功会话，同时用一张结果卡说明 `4/5`，不把失败样本藏起来。
+
 ## 最终分镜
 
 | 时间 | 画面 | 旁白 |
@@ -15,7 +17,7 @@
 | 0:17–1:05 | 实时执行 `npm run eval:stale-timer` | “它先读实现、需求和测试，真实复现失败，再做精确编辑。命令在隔离 fixture 中执行，API key 不会传给子进程。” |
 | 1:05–1:20 | 放大 generation diff | “修复没有依赖可复用的 timer handle，而是给每个 lease 分配单调 generation，旧 callback 只能删除自己那一代。” |
 | 1:20–1:35 | hidden grader `7/7` 和 protected files unchanged | “Agent 看不到 hidden grader。独立验证覆盖 handle 复用，并确认需求、配置和公开测试没有被改。” |
-| 1:35–1:52 | `nash inspect` 摘要和时间线 | “这次运行用了 10 个 turn、13 次工具调用，耗时约 49 秒。每次模型请求、工具结果和终止原因都能检查。” |
+| 1:35–1:52 | `nash inspect` 摘要和五次评测结果卡 | “这个会话的每次模型请求、工具结果和终止原因都能检查。固定条件五次有四次通过，一次违反契约也被 grader 留下。” |
 | 1:52–2:00 | 仓库地址与核心目录 | “仓库保留完整实现和测试，面试中我会重点解释重试边界、崩溃窗口和评测设计。” |
 
 旁白按正常语速约 230 至 260 个汉字。录制时不要逐行念终端，只在动作切换时补一句。
@@ -42,6 +44,21 @@ git diff --no-index \
 npm run dev -- inspect --workspace <workspace> <session-id>
 ```
 
+已经验证的备用成功会话是：
+
+```bash
+npm run dev -- inspect \
+  --workspace .nash/evals/stale-timer-20260829T173748Z-ebf612bb/workspace \
+  20260829T173748Z-5262d710
+
+npm run dev -- replay \
+  --workspace .nash/evals/stale-timer-20260829T173748Z-ebf612bb/workspace \
+  --speed 2 \
+  20260829T173748Z-5262d710
+```
+
+这个样本耗时 45.840 秒，包含 10 个 turn 和 13 次工具调用，使用 generation 修复，grader `7/7`。使用 replay 时，画面角标和旁白都要明确写“真实会话回放”。`.nash` 不入 Git，正式剪辑前不要清理这个本地 artifacts 目录。
+
 `git diff --no-index` 发现差异时退出码为 1，这是正常行为。录屏不要把它和测试失败混在同一画面。
 
 若需要剪去模型等待，可以对完整实时录屏的静止区间做 2 至 4 倍加速。保留 tool call 顺序和真实耗时摘要，不重新拼接一条不存在的运行轨迹。`replay --speed 8` 可作为备用素材，但画面和旁白必须明确写“会话回放”，不能冒充实时执行。
@@ -58,16 +75,16 @@ DeepSeek -> CodingAgent -> ToolRegistry -> local workspace
 
 不在视频里展示完整类图。评委可以从 README 和现场提问进入代码细节。
 
-## 正式录制前的稳定性门槛
+## 稳定性结果
 
-固定以下条件连续运行至少五次：
+固定以下条件已经连续运行五次：
 
 - 同一个 Git commit 和干净 fixture。
 - `deepseek-v4-flash`、thinking enabled、reasoning effort high。
 - 12 turns、24 tools、240 秒 wall-clock 上限。
 - 同一版公开测试、hidden grader 和受保护文件列表。
 
-记录每次 PASS/FAIL、时长、turn、工具数、input/output、cache hit/miss 和失败分类。建议门槛：五次全部完成，至少四次 grader PASS，p95 不超过 90 秒。未达到时先修 harness 或调整任务，不靠剪辑隐藏失败。
+结果为五次全部完成、四次 grader PASS，p50 45.840 秒，p95 63.078 秒，达到预设的 `4/5` 和 p95 不超过 90 秒门槛。失败样本公开测试 `5/5`，但错误依赖 timer handle 唯一性，hidden grader 将其判为 `6/7`。逐次数据和改进前的 `3/5` 探索组都记录在 [`evaluation.md`](evaluation.md)。
 
 ## 录制安全检查
 

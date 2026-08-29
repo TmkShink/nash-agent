@@ -8,7 +8,7 @@ Nash 是我用 TypeScript 从零实现的 Coding Agent。核心是自由的 mode
 
 我没有追求 Claude Code 那样完整的产品面，也没有只做一个把 shell 暴露给模型的最小循环。Nash 的重点是三条可解释边界：第一，provider 重试不能重放本地副作用；第二，文件和命令必须经过 `prepare → approve → execute`；第三，失败、预算和崩溃窗口必须能从 trace 中看见。
 
-真实评测里，DeepSeek 修复了一个旧计时回调误删新值的竞态。第一版修复通过公开测试，但 hidden grader 用 timer handle 复用击穿了它；强化契约后，模型改用 generation，公开和 hidden 测试 `7/7` 通过。这个过程也说明我的 eval 会检验实现依赖的假设，不只看演示是否成功。
+真实评测里，DeepSeek 修复了一个旧计时回调误删新值的竞态。第一版修复通过公开测试，但 hidden grader 用 timer handle 复用击穿了它。固定提交连续运行五次，四次通过 hidden grader，一次仍违反显式契约；耗时 p50 为 45.8 秒，p95 为 63.1 秒。这个结果既证明端到端链路可用，也保留了模型自信但错误的样本。
 
 ## 方案选择
 
@@ -86,6 +86,10 @@ runtime 不猜。`length` 映射为 incomplete，`content_filter` 单独终止�
 
 专用文件工具能返回稳定的路径、编码、大小和 stale-context 错误，也能自动允许低风险读取。全交给 shell 会让边界依赖命令文本和 prompt。Nash 仍保留 shell 处理构建、测试和复杂搜索，因为不可能为所有开发工具重写专用接口。
 
+**追问：为什么有时 `npm test | tail` 显示 exit 0，前面的测试其实失败了？**
+
+shell pipeline 默认返回最后一个命令的退出码，`tail` 成功会掩盖 `npm test` 的失败。Nash 如实记录 shell 返回值和完整的有界输出，不根据文本猜退出状态。关键验证应直接运行命令，或显式启用 pipefail；后续可以在检测到 pipeline 时增加警告，但不能把启发式文本匹配当成可靠状态。
+
 ## 安全
 
 **问：命令黑名单能阻止危险操作吗？**
@@ -134,7 +138,7 @@ system prompt 明确普通文件和命令输出是数据，不能覆盖用户或
 
 **问：当前为什么没有 context compaction？**
 
-先保证消息协议和 tool call/result 配对正确。完整历史配合有界工具输出容易验证，真实评测也有 91.3% prompt cache hit。缺点是 input 快速增长，第二轮 10 turns 累计 72,173 input tokens。Compaction 需要保留最新目标、未解决错误、tool 配对和 DeepSeek reasoning 续传，还要用差分 eval 证明摘要没有改变约束。
+先保证消息协议和 tool call/result 配对正确。完整历史配合有界工具输出容易验证，固定提交五次评测的 input cache 命中约 90.9%。缺点是 input 快速增长，五次合计 311,413 input token。Compaction 需要保留最新目标、未解决错误、tool 配对和 DeepSeek reasoning 续传，还要用差分 eval 证明摘要没有改变约束。
 
 **问：prompt cache 命中高，是否不用 compaction？**
 
@@ -148,11 +152,23 @@ system prompt 明确普通文件和命令输出是数据，不能覆盖用户或
 
 **问：hidden grader 会不会只是你事后加规则让第一版失败？**
 
-新增的是 README 已经暗含但未覆盖的 scheduler 契约：取消对已出队 callback 无效，handle 在不再代表可取消任务后可以复用。第一版用 handle 充当 generation，依赖了未声明的永久唯一性。先用反例验证漏洞，再把契约写清并重跑，第二版使用 generation 通过 `7/7`。评测变严的历史被保留，没有删除第一次结果。
+第一版 runner 只覆盖已出队 callback，没有检验 handle 复用。模型用 handle 充当 generation，依赖了未声明的永久唯一性。发现反例后，我把 handle 可复用写进公开 README，再把对应测试放进 Agent 运行后才出现的 grader。评测变严的历史和首轮失败都保留，没有拿新规则伪装成旧成绩。
+
+**追问：明确要求先读 README，是否等于把 hidden test 泄露给模型？**
+
+没有。README 是公开验收规格，任务提示只说明规格位置；它没有描述 hidden test 的构造，更没有给出 generation 或 entry identity 的答案。hidden grader 验证公开契约在未见场景中是否成立。真实仓库也常把约束放在 README、CONTRIBUTING 或 ADR 中，Agent 找到并遵守这些文档属于任务能力。
+
+**问：固定条件重复运行的结果怎样？**
+
+提交 `b537d34` 上连续五次，五次都正常结束，四次通过公开与 hidden grader，一次公开测试 `5/5`、hidden grader `6/7`。p50 为 45.840 秒，p95 为 63.078 秒。p95 按 nearest-rank 计算；五个样本时就是最大值，只能作为录屏门槛。失败运行读过 README，却仍选择 timer handle identity，所以归类为模型推理和自检不足，不是 provider、工具或轨迹故障。
+
+**追问：从 `3/5` 提升到 `4/5`，能证明 prompt 改进有效吗？**
+
+不能下因果结论。两个实验各五个样本，只有一个任务，采样误差很大。它只能作为支持性证据：显式指出规格位置后，README 读取率从 `3/5` 变为 `5/5`，grader 通过率从 `3/5` 变为 `4/5`。要得出更强结论，需要更多随机种子、任务族和置信区间。
 
 **问：一次演示成功能说明什么？**
 
-只能证明这一条端到端链路在给定模型、fixture 和预算下成功。正式视频前要至少重复五次，报告成功率和延迟分布。更多能力需要加入不同任务族，例如跨文件接口修改、依赖错误和大输出截断，不能从一个 cache case 外推。
+只能证明这一条端到端链路在给定模型、fixture 和预算下有 `4/5` 的观测成功率。它不代表总体成功率，也不能从一个 cache case 外推到任意仓库。更多能力需要加入不同任务族，例如跨文件接口修改、依赖错误和大输出截断，并报告各自的样本量和失败分类。
 
 **问：如何防模型修改测试骗过 grader？**
 
@@ -162,7 +178,7 @@ runner 在执行前后对 README、package、tsconfig 和公开测试做 SHA-256
 
 **问：下一步最值得加什么？**
 
-优先级是：可复现任务集和统计报告、context compaction、容器化 command runner。多 Agent 和复杂 TUI 排在后面，因为它们不会先解决当前最重要的正确性、成本和隔离问题。
+优先级是：扩展可复现任务集和统计报告、context compaction、容器化 command runner。当前单 case 已有重复数据，下一步要验证结论能否跨任务成立。多 Agent 和复杂 TUI 排在后面，因为它们不会先解决正确性、成本和隔离问题。
 
 **问：如果要支持远程团队仓库，架构哪里会变化？**
 

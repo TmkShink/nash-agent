@@ -46,18 +46,18 @@ Provider 在发送前完成统一消息到 DeepSeek wire schema 的转换。收�
 
 ## 真实运行数据
 
-强化 hidden grader 后的一次 `deepseek-v4-flash` 运行得到：
+固定提交 `b537d34`、`deepseek-v4-flash`、thinking high 和相同预算连续运行五次，结果如下：
 
 | 指标 | 数值 |
 | --- | ---: |
-| wall-clock | 49.260 秒 |
-| turns / model attempts | 10 / 10 |
-| tool calls | 13 |
-| input / output tokens | 72,173 / 5,681 |
-| prompt cache hit / miss | 65,920 / 6,253 |
-| visible + hidden grader | 7 / 7 |
+| grader PASS | 4 / 5 |
+| wall-clock p50 / p95 | 45.840 / 63.078 秒 |
+| turns 中位数 | 8 |
+| tool calls 中位数 | 12 |
+| input / output tokens 合计 | 311,413 / 29,196 |
+| prompt cache hit / miss 合计 | 283,008 / 28,405 |
 
-输入 token 中约 91.3% 命中 prompt cache。这个数据说明完整历史在短任务上能得到较高缓存复用，也暴露了 turn 增长带来的上下文成本。缓存不是 compaction 的替代品。
+输入 token 中约 90.9% 命中 prompt cache。这个数据说明完整历史在短任务上能得到较高缓存复用，也暴露了 turn 增长带来的上下文成本。缓存不是 compaction 的替代品。唯一失败来自模型违反 README 中的 handle 复用约束；provider 与协议链路正常，独立 grader 正确拒绝了它。
 
 ## 密钥与 endpoint
 

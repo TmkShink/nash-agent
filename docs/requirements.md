@@ -28,7 +28,7 @@
 | 模型输出解析 | 手写 Chat Completions 请求和响应校验 | `src/provider/deepseek-chat-client.ts` |
 | 循环与终止 | 自由工具循环、七类硬预算、明确 stop reason | `src/agent/coding-agent.ts` |
 | 错误处理 | provider、协议、审批、工具、命令和 trace 错误分层 | 对应单元测试与 JSONL 事件 |
-| 真实任务 | stale-timer 竞态修复，公开与 hidden grader 共 `7/7` | `evals/cases/stale-timer` |
+| 真实任务 | stale-timer 五次固定提交评测，`4/5` 通过；成功样本 grader `7/7` | `evals/cases/stale-timer`、`docs/evaluation.md` |
 
 项目没有引入模型厂商 SDK，provider 直接使用 Node 原生 `fetch`。这比题目要求更严格，但属于实现选择，不作为额外规则要求其他方案。
 
