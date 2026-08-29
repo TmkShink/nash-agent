@@ -36,6 +36,7 @@ export async function runStaleTimerEvaluation(): Promise<EvaluationResult> {
   const repositoryRoot = path.resolve(fileURLToPath(new URL("../../", import.meta.url)));
   const caseRoot = path.join(repositoryRoot, "evals", "cases", CASE_NAME);
   const fixture = path.join(caseRoot, "workspace");
+  const graderFixture = path.join(caseRoot, "grader");
   const task = (await readFile(path.join(caseRoot, "task.txt"), "utf8")).trim();
   const runId = newSessionId();
   const repositoryWorkspace = await Workspace.open(repositoryRoot);
@@ -67,9 +68,20 @@ export async function runStaleTimerEvaluation(): Promise<EvaluationResult> {
   ]);
 
   process.stderr.write("\nIndependent grader:\n");
+  const graderDirectory = path.join(workspace, ".grader");
+  await cp(graderFixture, graderDirectory, {
+    recursive: true,
+    errorOnExist: true,
+  });
   const graderExitCode = await runProcess(
-    "npm",
-    ["test"],
+    "node",
+    [
+      "--import",
+      "tsx",
+      "--test",
+      "test/lease-cache.test.ts",
+      ".grader/lease-cache.hidden.test.ts",
+    ],
     workspace,
     sanitizedEnvironment(process.env),
   );

@@ -8,4 +8,4 @@
 - `size` excludes expired entries even when their scheduled callbacks have not run yet.
 - `delete(key)` removes the current lease and returns whether one existed.
 
-The injected `Scheduler` makes time deterministic in tests. `cancel(handle)` is best effort: once a callback has been dequeued, cancellation cannot prevent that callback from running. Keep the exported API unchanged.
+The injected `Scheduler` makes time deterministic in tests. `cancel(handle)` is best effort: once a callback has been dequeued, cancellation cannot prevent that callback from running. A scheduler may recycle that callback's handle after dequeue because the handle no longer refers to cancellable work. Keep the exported API unchanged.
