@@ -15,6 +15,7 @@
     "build": "tsc -p tsconfig.json",
     "check": "npm run typecheck && npm test",
     "dev": "node --import tsx --env-file=.env.local src/cli/main.ts",
+    "eval:stale-timer": "node --import tsx --env-file=.env.local src/eval/stale-timer.ts",
     "test": "node --import tsx --test src/**/*.test.ts",
     "typecheck": "tsc --noEmit"
   },

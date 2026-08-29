@@ -14,6 +14,7 @@ import test from "node:test";
 import { Workspace } from "../workspace/workspace.js";
 import {
   prepareSessionDirectory,
+  prepareStateDirectory,
   resolveTraceReference,
 } from "./session-paths.js";
 
@@ -59,6 +60,41 @@ test("prepareSessionDirectory rejects symlinked state directories", async (t) =>
 
     await assert.rejects(prepareSessionDirectory(workspace), /symlink/i);
   });
+});
+
+test("prepareStateDirectory creates a private eval directory", async (t) => {
+  const { root, workspace } = await temporaryWorkspace(t);
+
+  const directory = await prepareStateDirectory(workspace, "evals");
+
+  assert.equal(directory, path.join(workspace.root, ".nash", "evals"));
+  assert.equal((await stat(path.join(root, ".nash"))).mode & 0o777, 0o700);
+  assert.equal((await stat(directory)).mode & 0o777, 0o700);
+});
+
+test("prepareStateDirectory rejects unsafe names and a symlinked eval directory", async (t) => {
+  const { workspace } = await temporaryWorkspace(t);
+  for (const name of [
+    "",
+    "../evals",
+    "Evals",
+    ".evals",
+    "eval_files",
+    "evals/nested",
+    "1evals",
+    "a".repeat(33),
+  ]) {
+    await assert.rejects(prepareStateDirectory(workspace, name), /invalid/i);
+  }
+
+  const symlinkFixture = await temporaryWorkspace(t);
+  const outside = await temporaryDirectory(t, "nash-evals-outside-");
+  await mkdir(path.join(symlinkFixture.root, ".nash"));
+  await symlink(outside, path.join(symlinkFixture.root, ".nash", "evals"));
+  await assert.rejects(
+    prepareStateDirectory(symlinkFixture.workspace, "evals"),
+    /symlink/i,
+  );
 });
 
 test("resolveTraceReference accepts a session ID and a relative JSONL path", async (t) => {

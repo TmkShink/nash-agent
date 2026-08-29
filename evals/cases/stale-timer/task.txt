@@ -1,0 +1,1 @@
+Fix the LeaseCache implementation so every test passes. Preserve the public API and do not modify README.md, package.json, tsconfig.json, or files under test/. Run the tests, then explain the root cause and your fix.

@@ -4,15 +4,27 @@ import path from "node:path";
 import { isSessionId } from "../trace/events.js";
 import type { Workspace } from "../workspace/workspace.js";
 
-const STATE_DIRECTORY_PARTS = [".nash", "sessions"] as const;
+const STATE_ROOT = ".nash";
+const STATE_SUBDIRECTORY_PATTERN = /^[a-z][a-z0-9-]{0,31}$/;
 
 export async function prepareSessionDirectory(workspace: Workspace): Promise<string> {
-  await assertStatePathHasNoSymlinks(workspace.root);
-  const directory = path.join(workspace.root, ...STATE_DIRECTORY_PARTS);
+  return await prepareStateDirectory(workspace, "sessions");
+}
+
+export async function prepareStateDirectory(
+  workspace: Workspace,
+  subdirectory: string,
+): Promise<string> {
+  if (!STATE_SUBDIRECTORY_PATTERN.test(subdirectory)) {
+    throw new Error(`invalid state subdirectory ${JSON.stringify(subdirectory)}`);
+  }
+  const stateParts = [STATE_ROOT, subdirectory] as const;
+  await assertStatePathHasNoSymlinks(workspace.root, stateParts);
+  const directory = path.join(workspace.root, ...stateParts);
   await mkdir(directory, { recursive: true, mode: 0o700 });
-  await chmod(path.join(workspace.root, STATE_DIRECTORY_PARTS[0]), 0o700);
+  await assertStatePathHasNoSymlinks(workspace.root, stateParts);
+  await chmod(path.join(workspace.root, STATE_ROOT), 0o700);
   await chmod(directory, 0o700);
-  await assertStatePathHasNoSymlinks(workspace.root);
   return directory;
 }
 
@@ -29,7 +41,8 @@ export async function resolveTraceReference(
   if (!looksLikeTracePath && isSessionId(reference)) {
     candidate = path.join(
       workspace.root,
-      ...STATE_DIRECTORY_PARTS,
+      STATE_ROOT,
+      "sessions",
       `${reference}.jsonl`,
     );
   } else {
@@ -56,9 +69,12 @@ export async function resolveTraceReference(
   return canonical;
 }
 
-async function assertStatePathHasNoSymlinks(root: string): Promise<void> {
+async function assertStatePathHasNoSymlinks(
+  root: string,
+  parts: readonly string[],
+): Promise<void> {
   let current = root;
-  for (const part of STATE_DIRECTORY_PARTS) {
+  for (const part of parts) {
     current = path.join(current, part);
     try {
       const information = await lstat(current);
