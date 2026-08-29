@@ -1,9 +1,11 @@
 import { type FileHandle, chmod, mkdir, open } from "node:fs/promises";
 import path from "node:path";
 
-import type { EventSink, TraceEvent } from "./events.js";
-
-const SESSION_ID_PATTERN = /^[a-zA-Z0-9][a-zA-Z0-9._-]{0,127}$/;
+import {
+  SESSION_ID_PATTERN,
+  type EventSink,
+  type TraceEvent,
+} from "./events.js";
 
 export class FileEventSink implements EventSink {
   readonly #path: string;

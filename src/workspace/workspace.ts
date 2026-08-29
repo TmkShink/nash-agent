@@ -1,6 +1,8 @@
 import { lstat, realpath, stat } from "node:fs/promises";
 import path from "node:path";
 
+import { assertAgentPathAllowed } from "./agent-path-policy.js";
+
 export class WorkspacePathError extends Error {
   public constructor(message: string) {
     super(message);
@@ -45,6 +47,7 @@ export class Workspace {
       throw new WorkspacePathError(`cannot resolve path: ${messageOf(error)}`);
     }
     this.#assertInside(canonical);
+    assertAgentPathAllowed(this.relative(canonical));
     return path.normalize(canonical);
   }
 
@@ -93,6 +96,7 @@ export class Workspace {
     const remainder = path.relative(ancestor, candidate);
     const resolved = path.join(canonicalAncestor, remainder);
     this.#assertInside(resolved);
+    assertAgentPathAllowed(this.relative(resolved));
     return path.normalize(resolved);
   }
 
@@ -110,6 +114,7 @@ export class Workspace {
     if (path.isAbsolute(input) || path.win32.isAbsolute(input)) {
       throw new WorkspacePathError("absolute paths are outside the workspace");
     }
+    assertAgentPathAllowed(input);
     const candidate = path.resolve(this.#root, input);
     this.#assertInside(candidate);
     return candidate;

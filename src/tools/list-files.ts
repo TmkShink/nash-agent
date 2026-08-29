@@ -4,6 +4,7 @@ import path from "node:path";
 import type { ToolDefinition } from "../core/types.js";
 import { safeDisplay } from "../text/safe-display.js";
 import type { Workspace } from "../workspace/workspace.js";
+import { isAgentVisibleName } from "../workspace/agent-path-policy.js";
 import {
   objectSchema,
   optionalInteger,
@@ -19,7 +20,7 @@ import {
   success,
 } from "./types.js";
 
-const IGNORED_DIRECTORIES = new Set([".git", ".nash", "node_modules"]);
+const IGNORED_DIRECTORIES = new Set(["node_modules"]);
 
 export class ListFilesTool implements LocalTool {
   public readonly effect = "read" as const;
@@ -89,6 +90,9 @@ export class ListFilesTool implements LocalTool {
             throw new CancellationError();
           }
           if (child.isDirectory() && IGNORED_DIRECTORIES.has(child.name)) {
+            continue;
+          }
+          if (!isAgentVisibleName(child.name)) {
             continue;
           }
           if (entries >= maxEntries) {

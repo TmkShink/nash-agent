@@ -1,6 +1,7 @@
 import { randomBytes } from "node:crypto";
 
 export const TRACE_SCHEMA_VERSION = 1;
+export const SESSION_ID_PATTERN = /^[a-zA-Z0-9][a-zA-Z0-9._-]{0,127}$/;
 
 export interface TraceEvent {
   readonly version: number;
@@ -110,6 +111,10 @@ export function newSessionId(now = new Date()): string {
     .replaceAll(":", "")
     .replace(/\.\d{3}Z$/, "Z");
   return `${timestamp}-${randomBytes(4).toString("hex")}`;
+}
+
+export function isSessionId(value: string): boolean {
+  return SESSION_ID_PATTERN.test(value);
 }
 
 function cloneJson(value: unknown): unknown {
