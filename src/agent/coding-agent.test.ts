@@ -1,0 +1,496 @@
+import assert from "node:assert/strict";
+import test from "node:test";
+
+import type {
+  Message,
+  ModelClient,
+  ModelRequest,
+  ModelResponse,
+  ToolCall,
+  Usage,
+} from "../core/types.js";
+import { ProviderError } from "../provider/provider-error.js";
+import type { EventEmitter } from "../trace/events.js";
+import {
+  AllowAllApprover,
+  type Approver,
+  type ToolExecutor,
+  type ToolResult,
+  failure,
+  success,
+} from "../tools/types.js";
+import {
+  CodingAgent,
+  type AgentLimits,
+  type AgentOutcome,
+} from "./coding-agent.js";
+
+type ModelStep =
+  | ModelResponse
+  | Error
+  | ((request: ModelRequest, signal: AbortSignal) => ModelResponse | Promise<ModelResponse>);
+
+class ScriptedModel implements ModelClient {
+  public readonly requests: ModelRequest[] = [];
+
+  public constructor(private readonly steps: ModelStep[]) {}
+
+  public async complete(
+    request: ModelRequest,
+    signal: AbortSignal,
+  ): Promise<ModelResponse> {
+    this.requests.push(structuredClone(request));
+    const step = this.steps.shift();
+    if (step === undefined) {
+      throw new Error("scripted model ran out of responses");
+    }
+    if (step instanceof Error) {
+      throw step;
+    }
+    return typeof step === "function" ? await step(request, signal) : step;
+  }
+}
+
+class ScriptedTools implements ToolExecutor {
+  public readonly definitions = [
+    {
+      name: "probe",
+      description: "Test probe",
+      parameters: {
+        type: "object",
+        properties: {},
+        additionalProperties: false,
+      },
+    },
+  ];
+  public readonly calls: ToolCall[] = [];
+
+  public constructor(
+    private readonly handler: (
+      call: ToolCall,
+      approver: Approver | undefined,
+      signal: AbortSignal,
+    ) => ToolResult | Promise<ToolResult> = () => success("ok"),
+  ) {}
+
+  public async execute(
+    call: ToolCall,
+    approver: Approver | undefined,
+    signal: AbortSignal,
+  ): Promise<ToolResult> {
+    this.calls.push(structuredClone(call));
+    return await this.handler(call, approver, signal);
+  }
+}
+
+class RecordingEvents implements EventEmitter {
+  public readonly records: { readonly type: string; readonly data: unknown }[] = [];
+
+  public async emit(type: string, data: unknown): Promise<void> {
+    this.records.push({ type, data: structuredClone(data) });
+  }
+}
+
+class FailingEvents implements EventEmitter {
+  public calls = 0;
+
+  public async emit(): Promise<void> {
+    this.calls += 1;
+    throw new Error("trace unavailable");
+  }
+}
+
+const defaultUsage: Usage = { inputTokens: 2, outputTokens: 1 };
+
+function response(options: {
+  readonly content?: string | null;
+  readonly finishReason?: string;
+  readonly reasoningContent?: string;
+  readonly toolCalls?: readonly ToolCall[];
+  readonly usage?: Usage;
+} = {}): ModelResponse {
+  const content = Object.hasOwn(options, "content") ? options.content ?? null : "done";
+  const message: Message = {
+    role: "assistant",
+    content,
+    ...(options.reasoningContent === undefined
+      ? {}
+      : { reasoningContent: options.reasoningContent }),
+    ...(options.toolCalls === undefined ? {} : { toolCalls: options.toolCalls }),
+  };
+  return {
+    message,
+    finishReason: options.finishReason ?? "stop",
+    usage: options.usage ?? defaultUsage,
+  };
+}
+
+function toolCall(id: string, argumentsJson = "{}"): ToolCall {
+  return { id, name: "probe", arguments: argumentsJson };
+}
+
+function makeAgent(options: {
+  readonly model: ModelClient;
+  readonly tools?: ToolExecutor;
+  readonly events?: EventEmitter;
+  readonly limits?: Partial<AgentLimits>;
+}): CodingAgent {
+  return new CodingAgent({
+    model: options.model,
+    tools: options.tools ?? new ScriptedTools(),
+    approver: new AllowAllApprover(),
+    events: options.events ?? new RecordingEvents(),
+    systemPrompt: "test system",
+    limits: {
+      maxDurationMs: 2_000,
+      retryBaseDelayMs: 0,
+      retryMaxDelayMs: 0,
+      ...options.limits,
+    },
+  });
+}
+
+async function run(agent: CodingAgent, task = "do the work"): Promise<AgentOutcome> {
+  return await agent.run(task, new AbortController().signal);
+}
+
+test("CodingAgent returns a final answer without executing a tool", async () => {
+  const model = new ScriptedModel([
+    response({ content: "  finished  ", usage: { inputTokens: 5, outputTokens: 2 } }),
+  ]);
+  const tools = new ScriptedTools();
+
+  const outcome = await run(makeAgent({ model, tools }));
+
+  assert.equal(outcome.stopReason, "final_answer");
+  assert.equal(outcome.finalAnswer, "  finished  ");
+  assert.equal(outcome.turns, 1);
+  assert.equal(outcome.modelAttempts, 1);
+  assert.equal(outcome.toolCalls, 0);
+  assert.deepEqual(outcome.usage, {
+    inputTokens: 5,
+    outputTokens: 2,
+    cacheHitTokens: 0,
+    cacheMissTokens: 0,
+  });
+  assert.equal(tools.calls.length, 0);
+  assert.deepEqual(model.requests[0]?.messages, [
+    { role: "system", content: "test system" },
+    { role: "user", content: "do the work" },
+  ]);
+});
+
+test("CodingAgent preserves opaque reasoning across a tool round", async () => {
+  const call = toolCall("call-1", '{"path":"a.ts"}');
+  const model = new ScriptedModel([
+    response({
+      content: null,
+      finishReason: "tool_calls",
+      reasoningContent: "opaque reasoning state",
+      toolCalls: [call],
+    }),
+    (request) => {
+      assert.deepEqual(request.messages[2], {
+        role: "assistant",
+        content: null,
+        reasoningContent: "opaque reasoning state",
+        toolCalls: [call],
+      });
+      assert.equal(request.messages[3]?.role, "tool");
+      assert.equal(request.messages[3]?.toolCallId, "call-1");
+      assert.deepEqual(JSON.parse(request.messages[3]?.content ?? ""), {
+        content: "observation",
+        isError: false,
+      });
+      return response({ content: "complete" });
+    },
+  ]);
+  const tools = new ScriptedTools(() => success("observation"));
+
+  const outcome = await run(makeAgent({ model, tools }));
+
+  assert.equal(outcome.stopReason, "final_answer");
+  assert.equal(outcome.finalAnswer, "complete");
+  assert.equal(tools.calls.length, 1);
+});
+
+test("CodingAgent executes a tool batch serially and appends results in call order", async () => {
+  const first = toolCall("first", '{"index":1}');
+  const second = toolCall("second", '{"index":2}');
+  let firstFinished = false;
+  const tools = new ScriptedTools(async (call) => {
+    if (call.id === "first") {
+      await new Promise((resolve) => setTimeout(resolve, 10));
+      firstFinished = true;
+      return success("first result");
+    }
+    assert.equal(firstFinished, true, "second tool started before first completed");
+    return success("second result");
+  });
+  const model = new ScriptedModel([
+    response({
+      content: null,
+      finishReason: "tool_calls",
+      toolCalls: [first, second],
+    }),
+    (request) => {
+      const resultMessages = request.messages.slice(3);
+      assert.deepEqual(
+        resultMessages.map((message) => message.toolCallId),
+        ["first", "second"],
+      );
+      assert.match(resultMessages[0]?.content ?? "", /first result/);
+      assert.match(resultMessages[1]?.content ?? "", /second result/);
+      return response({ content: "complete" });
+    },
+  ]);
+
+  const outcome = await run(makeAgent({ model, tools }));
+
+  assert.equal(outcome.stopReason, "final_answer");
+  assert.deepEqual(tools.calls.map((call) => call.id), ["first", "second"]);
+});
+
+test("CodingAgent rejects an over-budget tool batch before any side effect", async () => {
+  const tools = new ScriptedTools();
+  const model = new ScriptedModel([
+    response({
+      content: null,
+      finishReason: "tool_calls",
+      toolCalls: [toolCall("first"), toolCall("second")],
+    }),
+  ]);
+
+  const outcome = await run(
+    makeAgent({ model, tools, limits: { maxToolCalls: 1 } }),
+  );
+
+  assert.equal(outcome.stopReason, "max_tool_calls");
+  assert.equal(outcome.toolCalls, 0);
+  assert.equal(tools.calls.length, 0);
+});
+
+test("CodingAgent enforces turn and token budgets", async (t) => {
+  await t.test("turn budget", async () => {
+    const model = new ScriptedModel([
+      response({
+        content: null,
+        finishReason: "tool_calls",
+        toolCalls: [toolCall("once")],
+      }),
+    ]);
+    const outcome = await run(makeAgent({ model, limits: { maxTurns: 1 } }));
+
+    assert.equal(outcome.stopReason, "max_turns");
+    assert.equal(outcome.turns, 1);
+    assert.equal(outcome.toolCalls, 1);
+    assert.equal(model.requests.length, 1);
+  });
+
+  await t.test("token budget", async () => {
+    const model = new ScriptedModel([
+      response({
+        content: "would otherwise finish",
+        usage: { inputTokens: 7, outputTokens: 4 },
+      }),
+    ]);
+    const outcome = await run(
+      makeAgent({ model, limits: { maxTotalTokens: 10 } }),
+    );
+
+    assert.equal(outcome.stopReason, "token_budget");
+    assert.equal(outcome.finalAnswer, undefined);
+    assert.equal(outcome.usage.inputTokens + outcome.usage.outputTokens, 11);
+  });
+});
+
+test("CodingAgent enforces the wall-clock budget while waiting for the model", async () => {
+  const model = new ScriptedModel([
+    async (_request, signal) =>
+      await new Promise<ModelResponse>((_resolve, reject) => {
+        const rejectOnAbort = (): void => reject(signal.reason);
+        if (signal.aborted) {
+          rejectOnAbort();
+        } else {
+          signal.addEventListener("abort", rejectOnAbort, { once: true });
+        }
+      }),
+  ]);
+
+  const outcome = await run(
+    makeAgent({ model, limits: { maxDurationMs: 25 } }),
+  );
+
+  assert.equal(outcome.stopReason, "max_duration");
+  assert.equal(outcome.turns, 1);
+  assert.equal(outcome.modelAttempts, 1);
+});
+
+test("CodingAgent canonicalizes JSON arguments before repeated-failure detection", async () => {
+  const variants = [
+    '{"a":1,"nested":{"y":2,"z":3}}',
+    ' { "nested": { "z": 3, "y": 2 }, "a": 1 } ',
+    '{"nested":{"y":2,"z":3},"a":1}',
+  ];
+  const model = new ScriptedModel(
+    variants.map((argumentsJson, index) =>
+      response({
+        content: null,
+        finishReason: "tool_calls",
+        toolCalls: [toolCall(`call-${index}`, argumentsJson)],
+      }),
+    ),
+  );
+  const tools = new ScriptedTools(() =>
+    failure("same recoverable failure", "path_error"),
+  );
+
+  const outcome = await run(
+    makeAgent({
+      model,
+      tools,
+      limits: { maxRepeatedToolFailures: 3 },
+    }),
+  );
+
+  assert.equal(outcome.stopReason, "repeated_tool_failure");
+  assert.equal(outcome.turns, 3);
+  assert.equal(outcome.toolCalls, 3);
+  assert.equal(model.requests.length, 3);
+});
+
+test("CodingAgent retries only the model request and does not repeat tools", async () => {
+  const retryable = new ProviderError({
+    kind: "http",
+    message: "temporarily unavailable",
+    retryable: true,
+    statusCode: 503,
+    retryAfterMs: 0,
+  });
+  const call = toolCall("only-once");
+  const model = new ScriptedModel([
+    response({
+      content: null,
+      finishReason: "tool_calls",
+      toolCalls: [call],
+    }),
+    retryable,
+    (request) => {
+      assert.deepEqual(request, model.requests[1]);
+      return response({ content: "recovered" });
+    },
+  ]);
+  const tools = new ScriptedTools();
+  const events = new RecordingEvents();
+
+  const outcome = await run(
+    makeAgent({
+      model,
+      tools,
+      events,
+      limits: { maxModelRetries: 1 },
+    }),
+  );
+
+  assert.equal(outcome.stopReason, "final_answer");
+  assert.equal(outcome.modelAttempts, 3);
+  assert.equal(outcome.turns, 2);
+  assert.equal(tools.calls.length, 1);
+  assert.ok(events.records.some((event) => event.type === "model_retry_scheduled"));
+});
+
+test("CodingAgent does not retry a non-retryable model error", async () => {
+  const model = new ScriptedModel([
+    new ProviderError({
+      kind: "http",
+      message: "invalid request",
+      retryable: false,
+      statusCode: 400,
+    }),
+  ]);
+
+  const outcome = await run(
+    makeAgent({ model, limits: { maxModelRetries: 5 } }),
+  );
+
+  assert.equal(outcome.stopReason, "model_error");
+  assert.equal(outcome.modelAttempts, 1);
+  assert.equal(model.requests.length, 1);
+  assert.match(outcome.error ?? "", /invalid request/);
+});
+
+test("CodingAgent honors cancellation before calling the model", async () => {
+  const model = new ScriptedModel([response()]);
+  const tools = new ScriptedTools();
+  const controller = new AbortController();
+  controller.abort(new Error("cancelled by test"));
+
+  const outcome = await makeAgent({ model, tools }).run(
+    "do the work",
+    controller.signal,
+  );
+
+  assert.equal(outcome.stopReason, "cancelled");
+  assert.equal(outcome.turns, 0);
+  assert.equal(model.requests.length, 0);
+  assert.equal(tools.calls.length, 0);
+});
+
+test("CodingAgent performs no model or tool side effect when session_started cannot persist", async () => {
+  const model = new ScriptedModel([response()]);
+  const tools = new ScriptedTools();
+  const events = new FailingEvents();
+
+  const outcome = await run(makeAgent({ model, tools, events }));
+
+  assert.equal(outcome.stopReason, "trace_error");
+  assert.equal(outcome.turns, 0);
+  assert.equal(model.requests.length, 0);
+  assert.equal(tools.calls.length, 0);
+  assert.equal(events.calls, 1);
+});
+
+test("CodingAgent maps incomplete, filtered, and empty model output", async (t) => {
+  const cases = [
+    {
+      name: "length",
+      response: response({ content: "partial", finishReason: "length" }),
+      stopReason: "incomplete_model_output",
+    },
+    {
+      name: "content filter",
+      response: response({ content: null, finishReason: "content_filter" }),
+      stopReason: "content_filtered",
+    },
+    {
+      name: "tool finish without calls",
+      response: response({ content: null, finishReason: "tool_calls" }),
+      stopReason: "invalid_model_response",
+    },
+    {
+      name: "empty stop",
+      response: response({ content: null, finishReason: "stop" }),
+      stopReason: "invalid_model_response",
+    },
+    {
+      name: "tool calls with non-tool finish",
+      response: response({
+        content: null,
+        finishReason: "stop",
+        toolCalls: [toolCall("unexpected")],
+      }),
+      stopReason: "incomplete_model_output",
+    },
+  ] as const;
+
+  for (const entry of cases) {
+    await t.test(entry.name, async () => {
+      const tools = new ScriptedTools();
+      const outcome = await run(
+        makeAgent({ model: new ScriptedModel([entry.response]), tools }),
+      );
+      assert.equal(outcome.stopReason, entry.stopReason);
+      assert.equal(tools.calls.length, 0);
+    });
+  }
+});
