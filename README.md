@@ -29,11 +29,12 @@ alongside the code so the commit history remains useful during review.
 
 ## Development
 
-Requirements: Go 1.23 or newer.
+Requirements: Node.js 20.11 or newer.
 
 ```bash
-make check
-make build
+npm install
+npm run check
+npm run build
 ```
 
 No credential is committed to the repository. Runtime credentials will be read
@@ -42,4 +43,3 @@ from environment variables documented in [`.env.example`](.env.example).
 ## License
 
 [MIT](LICENSE)
-

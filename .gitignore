@@ -1,12 +1,12 @@
 /bin/
 /dist/
+node_modules/
 /.nash/
 
 .env
 .env.*
 !.env.example
 
-coverage.out
+coverage/
 *.log
 .DS_Store
-

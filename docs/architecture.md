@@ -27,6 +27,8 @@ observations <---- tool registry ----> local workspace
 
 `ModelClient` 隔离不同模型协议。Agent 只依赖统一的 message、tool definition 和 tool call，不读取厂商响应结构。
 
+首个 `ModelClient` 使用 TypeScript 原生 `fetch` 接入 DeepSeek Chat Completions。DeepSeek thinking 模式要求后续工具轮次原样回传 `reasoning_content`，因此统一消息保留这个不透明字段，但 Agent 不解释其内容。具体协议与重试选择见 [`provider-deepseek.md`](provider-deepseek.md)。
+
 `Tool` 是有真实多态需求的接口。每个工具声明名字、说明、JSON Schema 和执行函数；registry 负责查找、参数校验入口和统一结果封装。
 
 `EventSink` 接收不可变事件。JSONL 是首个实现，因为它可以边运行边追加，崩溃时仍保留已写事件，也便于命令行查看和后续评测。
@@ -60,3 +62,6 @@ Agent 状态包含消息历史、turn 数、工具调用数、连续模型错误
 
 首版不做多 Agent、向量数据库、远程沙箱、IDE 插件和复杂 TUI。这些功能会扩大演示故障面，也会稀释面试时最需要解释的 Agent loop。架构只为确定存在的扩展点留边界，不提前实现抽象。
 
+## 技术栈
+
+项目使用 TypeScript 和 Node.js 20.11 以上版本。运行时代码优先使用 Node 标准库；测试使用内置 `node:test`，`tsx` 只负责开发期执行 TypeScript。项目不引入 Agent framework 或模型厂商 SDK，provider 的 HTTP 请求和响应转换由本仓库实现。
