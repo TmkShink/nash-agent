@@ -1,30 +1,69 @@
 # DeepSeek 接入决策
 
-这份文档记录 Nash 首个 provider 的协议选择。信息按 2026 年 8 月 30 日的官方文档核对，模型能力和名称仍需在正式录制前复查。
+这份文档记录 Nash 首个 provider 的协议和故障处理。信息按 2026 年 8 月 30 日的官方文档核对，正式录制前仍要复查模型名称和参数。
 
-## 首版使用 Chat Completions
+## Chat Completions
 
-Nash 通过 `POST /chat/completions` 调用 DeepSeek，不依赖 OpenAI SDK。Chat Completions 同时支持 `deepseek-v4-flash`、`deepseek-v4-pro` 和原生 tool calls，协议也便于以后接入其他兼容服务。Responses API 目前仍有模型与参数兼容差异，首版不额外维护第二套消息转换。
+Nash 直接调用 `POST /chat/completions`，没有使用 OpenAI SDK。当前配置支持 `deepseek-v4-flash`、`deepseek-v4-pro` 和原生 tool calls。Agent 只依赖统一的 `ModelClient`，模型名和 endpoint 都来自配置。
 
-开发默认使用 `deepseek-v4-flash`，减少反复评测的等待和费用。正式视频可以把 `NASH_MODEL` 改为 `deepseek-v4-pro`，不改 Agent loop。模型名称不能写死在业务代码中。
+开发与重复评测默认使用 `deepseek-v4-flash`，减少等待和费用。是否在正式视频改用 `deepseek-v4-pro` 要由稳定性实测决定，不能只因为名字更强就更换。视频需要可复现，临时切模型会改变工具选择、耗时和输出。
 
-## thinking 模式的消息不变量
+## 为什么先用非流式响应
 
-DeepSeek 在 thinking 模式下返回 `reasoning_content`。只要请求包含 tools，后续请求就必须把此前 assistant message 中的 `reasoning_content` 原样带回；遗漏会导致 400。Nash 因此把它作为 provider 的不透明续传状态保存在消息历史中，Agent 不解析、不展示，也不把正文写进轨迹。
+首版设置 `stream: false`。一个完整 HTTP 响应构成清晰的模型提交点：只有 response schema、finish reason 和全部 tool calls 都通过校验后，Agent 才开始本地副作用。此时网络重试不会碰到“已经收到半个 tool call，是否执行过”的歧义。
 
-轨迹只记录 reasoning 的字符数、工具调用和可见答复。这样既能证明协议状态被保留，也不会把隐藏推理当作产品输出或调试依据。
+流式输出可以降低首字等待，但 tool call arguments 可能跨 chunk，断线后还涉及 partial envelope、去重 ID 和断点恢复。两分钟视频中，终端动作摘要比逐字输出更重要，首版不为流式增加第二套状态机。
 
-## 本地仍要校验工具参数
+## thinking 状态续传
 
-官方文档明确说明，模型生成的 tool arguments 可能不是合法 JSON，也可能包含 schema 中没有的字段。即使以后启用 beta strict mode，本地 runtime 仍会做类型、范围、路径和副作用检查。服务端 schema 约束用于减少格式错误，不能替代执行边界。
+DeepSeek thinking 模式返回 `reasoning_content`。带 tools 的后续请求必须把此前 assistant message 中的该字段原样带回，否则服务端会返回 400。Nash 将它视为 provider 的不透明 continuation state：
 
-## 重试范围
+- 原样存入 assistant message，并在后续轮次续传。
+- Agent 不读取它，也不根据其中的文字做控制判断。
+- 终端和 JSONL 只记录字符数，不写入推理正文。
 
-400、401、402 和 422 通常需要修改请求、密钥或账户状态，自动重试不会解决问题。429、500 和 503 可以在短暂退避后重试。网络中断也只在尚未收到完整模型响应时重试；工具一旦开始执行，就不会因为 provider 重试而重复触发。
+本地 mock 集成测试会执行两轮完整 CLI：第一轮返回 reasoning 和 `write_file`，第二轮在返回 final 前检查 assistant reasoning、tool call 和 tool result 是否完整续传。
 
-## 密钥规则
+## 请求与响应校验
 
-密钥只从 `DEEPSEEK_API_KEY` 或兼容变量 `NASH_API_KEY` 读取。本地开发放在权限为 `0600` 的 `.env.local`，该文件被 Git 忽略。日志、JSONL、错误信息和配置摘要都不能包含密钥。远程 endpoint 必须使用 HTTPS，本地 mock server 才允许 HTTP。
+Provider 在发送前完成统一消息到 DeepSeek wire schema 的转换。收到响应后会检查：
+
+- `choices[0]`、assistant role、content 和 finish reason 的类型。
+- tool call ID 非空且不重复。
+- tool type 必须为 function，name 非空，arguments 必须是字符串。
+- usage token 是非负安全整数。
+- 成功 body 不超过 8 MiB，错误 body 读取不超过 64 KiB。
+
+通过 provider 校验的 arguments 仍然只是字符串。ToolRegistry 会再次解析 JSON、拒绝未知字段，并执行类型、范围、路径和审批检查。模型原生 schema 能降低格式错误，不能充当本地授权。
+
+## 超时和重试
+
+请求 timeout 从发起 fetch 一直覆盖到 body 完整读取。官方说明非流式请求可能先发送空白 keepalive 行，所以只在收到 response headers 时清除 timer 会留下永久挂起风险；对应测试专门模拟了 headers 已到、body 不结束的情况。
+
+400、401、402 和 422 需要修改请求、凭据或账户状态，自动重试没有帮助。408、429、500、502、503、504 和网络中断可按指数退避重试，并尊重有上限的 `Retry-After`。DeepSeek 的 `insufficient_system_resource` finish reason 也按可重试 provider error 处理。
+
+重试只包围当前模型请求。工具不会放在这个 retry block 中，因此 provider 失败不会重做已经执行的文件写入或命令。
+
+## 真实运行数据
+
+强化 hidden grader 后的一次 `deepseek-v4-flash` 运行得到：
+
+| 指标 | 数值 |
+| --- | ---: |
+| wall-clock | 49.260 秒 |
+| turns / model attempts | 10 / 10 |
+| tool calls | 13 |
+| input / output tokens | 72,173 / 5,681 |
+| prompt cache hit / miss | 65,920 / 6,253 |
+| visible + hidden grader | 7 / 7 |
+
+输入 token 中约 91.3% 命中 prompt cache。这个数据说明完整历史在短任务上能得到较高缓存复用，也暴露了 turn 增长带来的上下文成本。缓存不是 compaction 的替代品。
+
+## 密钥与 endpoint
+
+密钥只从 `DEEPSEEK_API_KEY` 或兼容变量 `NASH_API_KEY` 读取。本地开发文件 `.env.local` 权限设为 `0600`，并被 Git 忽略。Agent 文件工具拒绝读取 `.env*` 凭据文件，命令环境会移除 API key、token、password、cookie 等常见敏感变量。
+
+错误 body 在展示前会移除当前 API key 并转义终端控制字符。远程 endpoint 必须使用 HTTPS，只有 `localhost` 和 `127.0.0.1` 的 mock server 可以使用 HTTP。
 
 ## 官方资料
 

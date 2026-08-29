@@ -1,67 +1,111 @@
-# Nash 的核心保持精简
+# Nash 架构说明
 
-## 核心判断
+## 设计结论
 
-Nash 采用一个自由的模型工具循环。模型根据当前对话决定调用哪个工具，runtime 负责验证参数、执行副作用、记录结果并判断是否继续。项目不会预设固定的“规划、编码、测试”工作流，因为真实编程任务的步骤数量和顺序并不稳定。
+Nash 选择“自由循环 + 受约束 runtime”。模型在每次 observation 后决定下一步，runtime 只负责协议、权限、预算、执行和记录。真实编程任务的步骤会被测试结果和代码结构改变，固定 planner graph 容易把早期错误一直带下去。
 
-自由循环之外，runtime 提供明确边界。文件访问被限制在工作区内，命令受审批、超时和输出上限约束，会话则写入 append-only JSONL。这样既保留模型的自主性，也能在失败后解释系统做过什么。
+这个选择介于三种常见路线之间：没有复制 Claude Code 的完整产品面，也没有把所有能力都交给一个自由 shell；核心规模接近精简 harness，同时保留审批、硬预算和可审计轨迹。面试时可以完整解释每条关键路径，也能录出清楚的两分钟演示。
 
-## 运行路径
+## 主循环
 
 ```text
 user task
    |
    v
-agent loop -----> model client
-   ^                  |
-   |                  | assistant text / tool calls
-   |                  v
-observations <---- tool registry ----> local workspace
-   |
-   +----> event sink ----> .nash/sessions/<id>.jsonl
+CodingAgent ---- request ----> ModelClient ----> DeepSeek
+   ^                               |
+   |                               | assistant / tool calls
+   |                               v
+   +---- tool results ------- ToolRegistry
+                                   |
+                         prepare -> approve -> execute
+                                   |
+                                   v
+                               Workspace
+
+Every transition ----> EventBus ----> console + JSONL
 ```
 
-一次 turn 只有两种正常结果：模型返回 final answer，或者返回一个及以上 tool call。工具结果会按原调用顺序写回对话。模型输出、工具执行和事件持久化都保留独立错误类型，避免把不同故障压成一句“Agent failed”。
+一次 turn 先完成一个模型响应。响应没有工具调用时，runtime 检查 `finish_reason` 和正文，再决定是否接受 final answer。响应包含工具调用时，assistant message 会连同不透明的 `reasoning_content` 进入历史，随后工具按模型给出的顺序执行，结果也按原顺序写回。
+
+DeepSeek 可以一次返回多个工具调用。Nash 当前串行执行整个 batch。这样能保持确定的副作用顺序，也避免两个并行编辑基于同一份旧文件。代价是独立读取无法并发，延迟会更高。以后若做并发，只会先放开无副作用的读取，并需要在事件中记录调度关系。
+
+## 副作用提交边界
+
+每个工具调用经过三个阶段：
+
+1. `prepare` 严格解析 JSON、拒绝未知字段、检查类型和大小，并生成不含完整文件内容的安全预览。
+2. `approve` 根据 `read / write / execute` effect 决定是否允许。交互模式自动允许读取，写入和命令默认拒绝。
+3. `execute` 在工作区内执行，并把成功或结构化错误都转换成 tool result。
+
+模型重试只发生在任何本地工具开始之前。provider 的 429、5xx、网络错误或超时可以重试；一旦某轮响应被接受并开始执行工具，后续请求失败不会回放这批副作用。这个边界提供的是“模型请求可重试、工具不因 HTTP 重试重复执行”，没有承诺跨进程 exactly-once。
+
+批量工具调用会在执行前整体检查剩余工具预算。如果一个 batch 已经超过上限，runtime 不执行其中任何一个。通过预算检查后，前面的工具可能成功、后面的工具仍可能失败；结果会逐个记录，模型下一轮决定如何恢复。
 
 ## 模块边界
 
-`ModelClient` 隔离不同模型协议。Agent 只依赖统一的 message、tool definition 和 tool call，不读取厂商响应结构。
+### ModelClient
 
-首个 `ModelClient` 使用 TypeScript 原生 `fetch` 接入 DeepSeek Chat Completions。DeepSeek thinking 模式要求后续工具轮次原样回传 `reasoning_content`，因此统一消息保留这个不透明字段，但 Agent 不解释其内容。具体协议与重试选择见 [`provider-deepseek.md`](provider-deepseek.md)。
+Agent 只认识统一的 `Message`、`ToolDefinition`、`ToolCall` 和 `Usage`。DeepSeek 的字段名、HTTP 状态和 response schema 都留在 provider。新增其他厂商时不需要修改循环。
 
-`Tool` 是有真实多态需求的接口。每个工具声明名字、说明、JSON Schema 和执行函数；registry 负责查找、参数校验入口和统一结果封装。
+### ToolRegistry 与工具
 
-`EventSink` 接收不可变事件。JSONL 是首个实现，因为它可以边运行边追加，崩溃时仍保留已写事件，也便于命令行查看和后续评测。
+`LocalTool` 有真实的多态需求：每个工具提供 schema、effect 和 `prepare`。registry 统一处理未知工具、参数错误、审批异常和执行异常。当前工具包括：
 
-审批策略属于副作用边界。文件读取可以直接执行，文件写入和 shell 命令默认经过策略判断。shell 本身可以执行任意代码，因此安全性不能依赖命令字符串黑名单；无人值守模式需要由使用者显式开启，并建议运行在临时工作区或容器中。
+- `list_files`
+- `read_file`
+- `write_file`
+- `edit_file`
+- `run_command`
 
-## 状态与终止
+`edit_file` 只接受唯一的精确旧文本。文件已变化或匹配不唯一时会拒绝，让模型重新读取。创建文件采用临时文件、`fsync` 和 hard link，避免并发 create-only 写入互相覆盖。
 
-Agent 状态包含消息历史、turn 数、工具调用数、连续模型错误、重复工具错误和累计用量。首版定义以下终止原因：
+### Workspace
 
-- 模型返回 final answer
-- 用户取消
-- 达到最大 turn 数
-- 达到最大工具调用数
-- 相同工具调用连续失败
-- 模型请求在重试后仍然失败
-- runtime 发生无法恢复的持久化错误
+路径检查同时处理词法路径和真实路径。已有文件通过 `realpath` 验证；新文件寻找最近的已存在父目录，再确认它的真实位置仍在工作区。`.env*` 凭据文件、`.git` 和 `.nash` 控制目录由文件工具直接拒绝，模板文件 `.env.example / sample / template` 仍可读取。
 
-终止原因会同时返回给 CLI 并写入事件流。预算限制属于 runtime 规则，不能交给提示词保证。
+### EventBus
 
-## 上下文策略
+EventBus 在 `emit` 调用时对数据做 JSON snapshot，再把并发事件串成单调 sequence。FileEventSink 使用 `wx` 创建权限为 `0600` 的 JSONL 文件，每次追加后同步到磁盘。任一 sink 失败会变成 sticky failure，Agent 停止继续产生不可审计的副作用。
 
-首版先保证消息协议正确和工具输出有界。每个工具结果都会记录完整长度、是否截断和可展示内容。后续压缩历史时必须保留这些不变量：
+trace schema v1 对顶层字段做 exact-key 校验，并要求同一 session ID、从 1 开始连续递增的 sequence、规范 ISO 时间和合法终止位置。`inspect` 不会宽松吞掉未知字段。
 
-- 最新用户目标不能丢失。
-- tool call 与对应 tool result 必须成对出现。
-- 未解决的错误和当前工作假设要保留。
-- 压缩内容要明确标记，不能伪装成用户原话。
+## 终止与预算
 
-## 暂不进入首版的能力
+Runtime 当前会返回以下 stop reason：
 
-首版不做多 Agent、向量数据库、远程沙箱、IDE 插件和复杂 TUI。这些功能会扩大演示故障面，也会稀释面试时最需要解释的 Agent loop。架构只为确定存在的扩展点留边界，不提前实现抽象。
+- `final_answer`
+- `cancelled`
+- `max_duration`
+- `max_turns`
+- `max_tool_calls`
+- `token_budget`
+- `repeated_tool_failure`
+- `model_error`
+- `incomplete_model_output`
+- `content_filtered`
+- `invalid_model_response`
+- `runtime_error`
+- `trace_error`
+
+turn、工具调用、累计输入输出 token 和 wall-clock deadline 是硬预算。模型响应到达后、任何工具执行前再次检查 token 预算。相同工具名和语义等价 JSON 参数连续失败时，参数会先规范化再计算 SHA-256，避免模型只改空白或 key 顺序绕过重复失败上限。
+
+## 上下文与 DeepSeek thinking
+
+当前版本保留完整消息历史，工具输出在进入历史前已经有文件大小、行数和 head-tail byte 上限。DeepSeek thinking 模式返回的 `reasoning_content` 被当作 provider 要求的不透明状态：完整续传，不解析，不展示，也不把正文写进 trace。
+
+完整历史让首版的正确性容易验证，也让 token 随 turn 增长。真实评测中 prompt cache 覆盖了大部分重复输入，但 cache 只能降低费用和推理开销，不能消除客户端传输、context 上限和隐私风险。后续 compaction 需要保证 tool call/result 成对、最新目标不丢失、未解决错误保留，并用评测证明摘要没有改写约束。
+
+## 崩溃与 replay
+
+执行工具前记录 `tool_started`，完成后记录 `tool_finished`。如果进程在两者之间崩溃，`inspect` 会显示 unfinished tool。文件系统副作用和 JSONL 无法原子提交，runtime 不能从悬空事件断定工具是否已经执行，恢复时也不能盲目重试写入或命令。
+
+`replay` 只按事件时间重放终端视图，不读取模型，也不执行工具。执行级确定性 replay 需要工作区快照、依赖版本、环境和外部服务记录，当前版本没有提供。
+
+## 明确不做的部分
+
+首版不做多 Agent、向量数据库、IDE 插件、复杂 TUI、流式 tool call 和 OS 级沙箱。它们会扩大实现和演示的故障面。shell 命令仍是宿主机进程，`--yes` 只适用于隔离评测目录。完整威胁模型见 [`security.md`](security.md)。
 
 ## 技术栈
 
-项目使用 TypeScript 和 Node.js 20.11 以上版本。运行时代码优先使用 Node 标准库；测试使用内置 `node:test`，`tsx` 只负责开发期执行 TypeScript。项目不引入 Agent framework 或模型厂商 SDK，provider 的 HTTP 请求和响应转换由本仓库实现。
+项目使用 TypeScript 和 Node.js 20.11 以上版本。runtime 优先使用 Node 标准库；测试使用 `node:test`，`tsx` 只负责开发期执行 TypeScript。DeepSeek 请求使用原生 `fetch`，没有引入模型 SDK。
