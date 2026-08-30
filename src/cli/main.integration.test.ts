@@ -14,6 +14,8 @@ const REPOSITORY_ROOT = fileURLToPath(new URL("../../", import.meta.url));
 const MAIN_PATH = path.join(REPOSITORY_ROOT, "src", "cli", "main.ts");
 const FAKE_API_KEY = "nash-cli-integration-fake-key";
 const MODEL = "mock-deepseek-model";
+const OVERRIDE_MODEL = "cli-override-model";
+const OVERRIDE_MAX_OUTPUT_TOKENS = 12_345;
 const TASK = "Create the requested integration-test artifact";
 const TARGET_PATH = "generated.txt";
 const FILE_CONTENT = "created by the Nash CLI integration test\n";
@@ -231,6 +233,14 @@ async function runCli(
       "--yes",
       "--workspace",
       workspace,
+      "--model",
+      OVERRIDE_MODEL,
+      "--thinking",
+      "enabled",
+      "--reasoning-effort",
+      "max",
+      "--max-output-tokens",
+      String(OVERRIDE_MAX_OUTPUT_TOKENS),
       TASK,
     ],
     {
@@ -317,7 +327,7 @@ function array(value: unknown, label: string): unknown[] {
 
 function assertSecondRequestBody(value: unknown): void {
   const body = record(value, "second request");
-  assert.equal(body.model, MODEL);
+  assertProviderOverrides(body);
   assert.equal(body.stream, true);
   assert.deepEqual(body.stream_options, { include_usage: true });
   const messages = array(body.messages, "second messages");
@@ -351,6 +361,13 @@ function assertSecondRequestBody(value: unknown): void {
       bytes: Buffer.byteLength(FILE_CONTENT),
     },
   });
+}
+
+function assertProviderOverrides(body: Record<string, unknown>): void {
+  assert.equal(body.model, OVERRIDE_MODEL);
+  assert.deepEqual(body.thinking, { type: "enabled" });
+  assert.equal(body.reasoning_effort, "max");
+  assert.equal(body.max_tokens, OVERRIDE_MAX_OUTPUT_TOKENS);
 }
 
 test(
@@ -396,6 +413,7 @@ test(
     }
 
     const firstBody = record(mock.requests[0]?.body, "first request");
+    assertProviderOverrides(firstBody);
     assert.equal(firstBody.stream, true);
     assert.deepEqual(firstBody.stream_options, { include_usage: true });
     const firstMessages = array(firstBody.messages, "first messages");

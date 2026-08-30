@@ -35,6 +35,7 @@ export interface AgentLimits {
   readonly maxDurationMs: number;
   readonly maxRepeatedToolFailures: number;
   readonly maxModelRetries: number;
+  readonly maxIncompleteModelContinuations: number;
   readonly retryBaseDelayMs: number;
   readonly retryMaxDelayMs: number;
 }
@@ -67,6 +68,7 @@ const DEFAULT_LIMITS: AgentLimits = {
   maxDurationMs: 10 * 60 * 1_000,
   maxRepeatedToolFailures: 3,
   maxModelRetries: 2,
+  maxIncompleteModelContinuations: 1,
   retryBaseDelayMs: 500,
   retryMaxDelayMs: 10_000,
 };
@@ -127,6 +129,7 @@ export class CodingAgent {
     ];
     let lastFailureSignature: string | undefined;
     let repeatedFailures = 0;
+    let incompleteModelContinuations = 0;
 
     try {
       await this.#emit("session_started", {
@@ -192,6 +195,21 @@ export class CodingAgent {
 
         const calls = completion.message.toolCalls ?? [];
         if (calls.length === 0) {
+          if (
+            shouldContinueIncompleteModelOutput(completion) &&
+            incompleteModelContinuations <
+              this.#limits.maxIncompleteModelContinuations
+          ) {
+            incompleteModelContinuations++;
+            messages.push({ ...completion.message, content: "" });
+            messages.push({ role: "user", content: MODEL_CONTINUATION_PROMPT });
+            await this.#emit("model_continuation_scheduled", {
+              turn: stats.turns,
+              continuation: incompleteModelContinuations,
+              maximum: this.#limits.maxIncompleteModelContinuations,
+            });
+            continue;
+          }
           if (completion.finishReason === "length") {
             return await this.#finish("incomplete_model_output", stats, startedAt);
           }
@@ -369,6 +387,21 @@ export class CodingAgent {
 
 class TraceWriteError extends Error {}
 
+const MODEL_CONTINUATION_PROMPT =
+  "The previous response reached the output limit. Continue the same task now: use a tool immediately or provide the final answer, and keep reasoning concise.";
+
+function shouldContinueIncompleteModelOutput(
+  response: ModelResponse,
+): boolean {
+  return (
+    response.finishReason === "length" &&
+    (response.message.content === null ||
+      response.message.content.trim() === "") &&
+    response.message.reasoningContent !== undefined &&
+    response.message.reasoningContent.trim() !== ""
+  );
+}
+
 function outcome(
   stopReason: StopReason,
   stats: MutableStats,
@@ -455,7 +488,12 @@ function validateLimits(limits: AgentLimits): AgentLimits {
       throw new RangeError(`${key} must be a positive integer`);
     }
   }
-  for (const key of ["maxModelRetries", "retryBaseDelayMs", "retryMaxDelayMs"] as const) {
+  for (const key of [
+    "maxModelRetries",
+    "maxIncompleteModelContinuations",
+    "retryBaseDelayMs",
+    "retryMaxDelayMs",
+  ] as const) {
     if (!Number.isSafeInteger(limits[key]) || limits[key] < 0) {
       throw new RangeError(`${key} must be a non-negative integer`);
     }

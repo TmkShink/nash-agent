@@ -145,6 +145,11 @@ export class TerminalUI implements EventSink, ModelStreamObserver {
           `${this.#paint("yellow", "↻ Retrying model")} ${this.#paint("dim", `in ${numberField(data, "delayMs", 0)}ms`)}\n`,
         );
         return;
+      case "model_continuation_scheduled":
+        await this.#write(
+          `${this.#paint("yellow", "↻ Continuing model")} ${this.#paint("dim", `after output limit · ${numberField(data, "continuation", 0)}/${numberField(data, "maximum", 0)}`)}\n`,
+        );
+        return;
       case "model_response":
         this.#finishModelResponse(data);
         return;

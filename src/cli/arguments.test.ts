@@ -15,6 +15,12 @@ test("parseCliArguments parses run options and limits", () => {
         "/work",
         "--model",
         "deepseek-test",
+        "--thinking",
+        "disabled",
+        "--reasoning-effort",
+        "max",
+        "--max-output-tokens",
+        "4096",
         "--yes",
         "--max-turns",
         "3",
@@ -35,7 +41,12 @@ test("parseCliArguments parses run options and limits", () => {
       workspace: "/work",
       task: "fix the bug",
       allowAll: true,
-      model: "deepseek-test",
+      provider: {
+        model: "deepseek-test",
+        thinking: "disabled",
+        reasoningEffort: "max",
+        maxOutputTokens: 4_096,
+      },
       limits: {
         maxTurns: 3,
         maxToolCalls: 4,
@@ -74,6 +85,7 @@ test("parseCliArguments treats every token after -- as positional", () => {
     workspace: process.cwd(),
     task: "--help --yes",
     allowAll: false,
+    provider: {},
     limits: {},
   });
   assert.deepEqual(
@@ -86,6 +98,24 @@ test("parseCliArguments rejects duplicate and unknown options", () => {
   const invalid = [
     ["run", "--yes", "--yes", "task"],
     ["run", "-w", "one", "--workspace", "two", "task"],
+    ["run", "--model", "one", "--model", "two", "task"],
+    ["run", "--thinking", "enabled", "--thinking", "disabled", "task"],
+    [
+      "run",
+      "--reasoning-effort",
+      "low",
+      "--reasoning-effort",
+      "high",
+      "task",
+    ],
+    [
+      "run",
+      "--max-output-tokens",
+      "256",
+      "--max-output-tokens",
+      "512",
+      "task",
+    ],
     ["run", "--unknown", "value", "task"],
     ["inspect", "--workspace", "one", "-w", "two", "session"],
     ["inspect", "--speed", "2", "session"],
@@ -102,6 +132,9 @@ test("parseCliArguments rejects missing option values and session references", (
   const invalid = [
     ["run", "--workspace"],
     ["run", "--model", "--yes", "task"],
+    ["run", "--thinking", "--yes", "task"],
+    ["run", "--reasoning-effort", "--yes", "task"],
+    ["run", "--max-output-tokens", "--yes", "task"],
     ["run", "--max-turns", "task"],
     ["replay", "--speed"],
     ["inspect"],
@@ -110,6 +143,54 @@ test("parseCliArguments rejects missing option values and session references", (
   ];
 
   for (const arguments_ of invalid) {
+    assert.throws(() => parseCliArguments(arguments_), CliUsageError);
+  }
+});
+
+test("parseCliArguments parses provider enum values and output-token boundaries", () => {
+  for (const thinking of ["enabled", "disabled"] as const) {
+    const command = parseCliArguments(["run", "--thinking", thinking, "task"]);
+    assert.equal(command.kind, "run");
+    assert.deepEqual(command.provider, { thinking });
+  }
+
+  for (const reasoningEffort of ["low", "high", "max"] as const) {
+    const command = parseCliArguments([
+      "run",
+      "--reasoning-effort",
+      reasoningEffort,
+      "task",
+    ]);
+    assert.equal(command.kind, "run");
+    assert.deepEqual(command.provider, { reasoningEffort });
+  }
+
+  for (const [raw, maxOutputTokens] of [
+    ["256", 256],
+    ["384000", 384_000],
+  ] as const) {
+    const command = parseCliArguments([
+      "run",
+      "--max-output-tokens",
+      raw,
+      "task",
+    ]);
+    assert.equal(command.kind, "run");
+    assert.deepEqual(command.provider, { maxOutputTokens });
+  }
+});
+
+test("parseCliArguments rejects invalid provider enums and output-token bounds", () => {
+  for (const arguments_ of [
+    ["run", "--thinking", "auto", "task"],
+    ["run", "--thinking", "ENABLED", "task"],
+    ["run", "--reasoning-effort", "medium", "task"],
+    ["run", "--reasoning-effort", "MAX", "task"],
+    ["run", "--max-output-tokens", "255", "task"],
+    ["run", "--max-output-tokens", "384001", "task"],
+    ["run", "--max-output-tokens", "256.5", "task"],
+    ["run", "--max-output-tokens", "NaN", "task"],
+  ]) {
     assert.throws(() => parseCliArguments(arguments_), CliUsageError);
   }
 });

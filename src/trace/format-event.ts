@@ -13,6 +13,8 @@ export function formatTraceEvent(event: TraceEvent): string {
       return `${prefix} model request failed · ${safeDisplay(stringField(data, "kind", "unknown"), 40)}${data.retryable === true ? " · retryable" : ""}`;
     case "model_retry_scheduled":
       return `${prefix} retry scheduled · ${numberField(data, "delayMs", 0)}ms`;
+    case "model_continuation_scheduled":
+      return `${prefix} model continuation scheduled · ${numberField(data, "continuation", "?")}/${numberField(data, "maximum", "?")}`;
     case "model_response": {
       const calls = Array.isArray(data.toolCalls) ? data.toolCalls : [];
       if (calls.length === 0) {

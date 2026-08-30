@@ -17,6 +17,20 @@ export interface ProviderSettings {
   readonly maxOutputTokens: number;
 }
 
+export type ProviderRunOverrides = Readonly<
+  Partial<
+    Pick<
+      ProviderSettings,
+      "model" | "thinking" | "reasoningEffort" | "maxOutputTokens"
+    >
+  >
+>;
+
+export const PROVIDER_OUTPUT_TOKEN_BOUNDS = {
+  minimum: 256,
+  maximum: 384_000,
+} as const;
+
 export interface RuntimeConfig {
   readonly credentials: ProviderCredentials;
   readonly provider: ProviderSettings;
@@ -77,8 +91,8 @@ export function loadRuntimeConfig(
         "NASH_MAX_OUTPUT_TOKENS",
         environment.NASH_MAX_OUTPUT_TOKENS,
         16_384,
-        256,
-        384_000,
+        PROVIDER_OUTPUT_TOKEN_BOUNDS.minimum,
+        PROVIDER_OUTPUT_TOKEN_BOUNDS.maximum,
       ),
     },
   };

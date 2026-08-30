@@ -240,6 +240,29 @@ test("TerminalUI throttles status redraws while preserving transition and final 
   assert.match(output.text, /◇ Thought 160ms · 110 chars\n$/);
 });
 
+test("TerminalUI labels an output-limit continuation", async () => {
+  const event = eventSequence();
+  const output = new MemoryWritable();
+  const ui = new TerminalUI(output, {
+    isTTY: true,
+    color: false,
+    now: () => 1_000,
+  });
+
+  await ui.write(
+    event("model_continuation_scheduled", {
+      turn: 1,
+      continuation: 1,
+      maximum: 1,
+    }),
+  );
+
+  assert.equal(
+    output.text,
+    "↻ Continuing model after output limit · 1/1\n",
+  );
+});
+
 test("TerminalUI non-TTY mode stays deterministic and ignores ephemeral deltas", async () => {
   const event = eventSequence();
   const output = new MemoryWritable();

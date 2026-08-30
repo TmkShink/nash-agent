@@ -66,7 +66,7 @@ async function runAgent(command: RunCommand): Promise<number> {
   const workspace = await Workspace.open(command.workspace);
   const provider = {
     ...runtime.provider,
-    ...(command.model === undefined ? {} : { model: command.model }),
+    ...command.provider,
   };
   const sessionId = newSessionId();
   const sessionDirectory = await prepareSessionDirectory(workspace);
@@ -101,6 +101,8 @@ async function runAgent(command: RunCommand): Promise<number> {
         `Nash session ${sessionId}`,
         `workspace: ${workspace.root}`,
         `model: ${provider.model}`,
+        `thinking: ${provider.thinking}${provider.thinking === "enabled" ? ` · ${provider.reasoningEffort}` : ""}`,
+        `model output limit: ${provider.maxOutputTokens} tokens`,
         `trace: ${workspace.relative(fileSink.path)}`,
         command.allowAll
           ? "warning: --yes approves writes and unsandboxed shell commands"

@@ -120,6 +120,8 @@ class FailingEvents implements EventEmitter {
 }
 
 const defaultUsage: Usage = { inputTokens: 2, outputTokens: 1 };
+const CONTINUATION_PROMPT =
+  "The previous response reached the output limit. Continue the same task now: use a tool immediately or provide the final answer, and keep reasoning concise.";
 
 function response(options: {
   readonly content?: string | null;
@@ -506,11 +508,161 @@ test("CodingAgent performs no model or tool side effect when session_started can
   assert.equal(events.calls, 1);
 });
 
+test("CodingAgent continues one reasoning-only length response into tools and a final answer", async () => {
+  const call = toolCall("continued-tool", '{"path":"game.ts"}');
+  const events = new RecordingEvents();
+  const tools = new ScriptedTools(() => success("tool completed"));
+  const model = new ScriptedModel([
+    response({
+      content: " \n ",
+      finishReason: "length",
+      reasoningContent: "opaque unfinished reasoning",
+    }),
+    (request) => {
+      assert.deepEqual(request.messages, [
+        { role: "system", content: "test system" },
+        { role: "user", content: "do the work" },
+        {
+          role: "assistant",
+          content: "",
+          reasoningContent: "opaque unfinished reasoning",
+        },
+        { role: "user", content: CONTINUATION_PROMPT },
+      ]);
+      return response({
+        content: null,
+        finishReason: "tool_calls",
+        toolCalls: [call],
+      });
+    },
+    (request) => {
+      assert.deepEqual(request.messages.slice(4), [
+        {
+          role: "assistant",
+          content: null,
+          toolCalls: [call],
+        },
+        {
+          role: "tool",
+          content: JSON.stringify({ content: "tool completed", isError: false }),
+          toolCallId: "continued-tool",
+        },
+      ]);
+      return response({ content: "continued task complete" });
+    },
+  ]);
+
+  const outcome = await run(makeAgent({ model, tools, events }));
+
+  assert.equal(outcome.stopReason, "final_answer");
+  assert.equal(outcome.finalAnswer, "continued task complete");
+  assert.equal(outcome.turns, 3);
+  assert.equal(outcome.modelAttempts, 3);
+  assert.equal(outcome.toolCalls, 1);
+  assert.deepEqual(outcome.usage, {
+    inputTokens: 6,
+    outputTokens: 3,
+    cacheHitTokens: 0,
+    cacheMissTokens: 0,
+  });
+  assert.deepEqual(tools.calls, [call]);
+  assert.deepEqual(
+    events.records.find(
+      (entry) => entry.type === "model_continuation_scheduled",
+    )?.data,
+    { turn: 1, continuation: 1, maximum: 1 },
+  );
+  assert.deepEqual(
+    events.records.map((entry) => entry.type),
+    [
+      "session_started",
+      "model_request_started",
+      "model_response",
+      "model_continuation_scheduled",
+      "model_request_started",
+      "model_response",
+      "tool_started",
+      "tool_finished",
+      "model_request_started",
+      "model_response",
+      "session_finished",
+    ],
+  );
+});
+
+test("CodingAgent schedules only the default single incomplete-model continuation", async () => {
+  const events = new RecordingEvents();
+  const model = new ScriptedModel([
+    response({
+      content: null,
+      finishReason: "length",
+      reasoningContent: "first unfinished reasoning",
+    }),
+    (request) => {
+      assert.deepEqual(request.messages.slice(2), [
+        {
+          role: "assistant",
+          content: "",
+          reasoningContent: "first unfinished reasoning",
+        },
+        { role: "user", content: CONTINUATION_PROMPT },
+      ]);
+      return response({
+        content: "",
+        finishReason: "length",
+        reasoningContent: "second unfinished reasoning",
+      });
+    },
+  ]);
+
+  const outcome = await run(makeAgent({ model, events }));
+
+  assert.equal(outcome.stopReason, "incomplete_model_output");
+  assert.equal(outcome.turns, 2);
+  assert.equal(outcome.modelAttempts, 2);
+  assert.equal(model.requests.length, 2);
+  assert.equal(
+    (
+      events.records[0]?.data as {
+        readonly limits?: Readonly<Record<string, unknown>>;
+      }
+    ).limits?.maxIncompleteModelContinuations,
+    1,
+  );
+  assert.equal(
+    events.records.filter(
+      (entry) => entry.type === "model_continuation_scheduled",
+    ).length,
+    1,
+  );
+  assert.deepEqual(
+    events.records.map((entry) => entry.type),
+    [
+      "session_started",
+      "model_request_started",
+      "model_response",
+      "model_continuation_scheduled",
+      "model_request_started",
+      "model_response",
+      "session_finished",
+    ],
+  );
+});
+
 test("CodingAgent maps incomplete, filtered, and empty model output", async (t) => {
   const cases = [
     {
       name: "length",
-      response: response({ content: "partial", finishReason: "length" }),
+      response: response({
+        content: "partial",
+        finishReason: "length",
+        reasoningContent: "opaque partial reasoning",
+      }),
+      stopReason: "incomplete_model_output",
+    },
+    {
+      name: "length without reasoning",
+      response: response({ content: null, finishReason: "length" }),
       stopReason: "incomplete_model_output",
     },
     {
@@ -537,15 +689,27 @@ test("CodingAgent maps incomplete, filtered, and empty model output", async (t) 
       }),
       stopReason: "incomplete_model_output",
     },
+    {
+      name: "length with incomplete tool calls",
+      response: response({
+        content: null,
+        finishReason: "length",
+        reasoningContent: "opaque tool reasoning",
+        toolCalls: [toolCall("incomplete")],
+      }),
+      stopReason: "incomplete_model_output",
+    },
   ] as const;
 
   for (const entry of cases) {
     await t.test(entry.name, async () => {
       const tools = new ScriptedTools();
+      const model = new ScriptedModel([entry.response]);
       const outcome = await run(
-        makeAgent({ model: new ScriptedModel([entry.response]), tools }),
+        makeAgent({ model, tools }),
       );
       assert.equal(outcome.stopReason, entry.stopReason);
+      assert.equal(model.requests.length, 1);
       assert.equal(tools.calls.length, 0);
     });
   }
