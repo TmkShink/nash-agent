@@ -1,0 +1,9 @@
+{
+  "name": "nash-2048-evaluation",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "start": "node scripts/serve.mjs",
+    "test": "node --test test/game.test.js"
+  }
+}

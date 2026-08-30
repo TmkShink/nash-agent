@@ -1,0 +1,1 @@
+Build the complete, polished 2048 web game specified in README.md. Keep README.md, package.json, scripts/, and test/ unchanged. Run npm test before you finish.
