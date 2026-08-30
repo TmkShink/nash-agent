@@ -29,6 +29,7 @@ import {
 } from "./arguments.js";
 import { ConsoleEventSink } from "./console-event-sink.js";
 import { openTerminalApprover } from "./interactive-approver.js";
+import { TerminalUI } from "./terminal-ui.js";
 
 export async function main(arguments_ = process.argv.slice(2)): Promise<number> {
   try {
@@ -71,13 +72,21 @@ async function runAgent(command: RunCommand): Promise<number> {
   const sessionDirectory = await prepareSessionDirectory(workspace);
   const fileSink = await FileEventSink.open(sessionDirectory, sessionId);
   let eventBus: EventBus | undefined;
+  let terminalUI: TerminalUI | undefined;
   let terminalApproval: ReturnType<typeof openTerminalApprover> | undefined;
   let cancellation: ReturnType<typeof installCancellation> | undefined;
   let outcome: AgentOutcome;
   try {
+    terminalUI =
+      process.stderr.isTTY === true
+        ? new TerminalUI(process.stderr, {
+            isTTY: true,
+            color: process.env.NO_COLOR === undefined,
+          })
+        : undefined;
     eventBus = new EventBus(sessionId, [
       fileSink,
-      new ConsoleEventSink(process.stderr),
+      terminalUI ?? new ConsoleEventSink(process.stderr),
     ]);
     terminalApproval = command.allowAll ? undefined : openTerminalApprover();
     const approver = command.allowAll
@@ -106,6 +115,9 @@ async function runAgent(command: RunCommand): Promise<number> {
       tools: new ToolRegistry(createDefaultTools(workspace)),
       approver,
       events: eventBus,
+      ...(terminalUI === undefined
+        ? {}
+        : { modelStreamObserver: terminalUI }),
       limits: command.limits,
     });
     outcome = await agent.run(command.task, cancellation.signal);
@@ -119,7 +131,9 @@ async function runAgent(command: RunCommand): Promise<number> {
     }
   }
 
-  if (outcome.finalAnswer !== undefined) {
+  const finalAnswerAlreadyVisible =
+    process.stdout.isTTY === true && terminalUI?.finalAnswerWasStreamed === true;
+  if (outcome.finalAnswer !== undefined && !finalAnswerAlreadyVisible) {
     process.stdout.write(`${outcome.finalAnswer}${outcome.finalAnswer.endsWith("\n") ? "" : "\n"}`);
   }
   if (outcome.error !== undefined) {

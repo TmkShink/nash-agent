@@ -6,6 +6,8 @@ import type {
   ModelClient,
   ModelRequest,
   ModelResponse,
+  ModelStreamEvent,
+  ModelStreamObserver,
   ToolCall,
   Usage,
 } from "../core/types.js";
@@ -28,18 +30,25 @@ import {
 type ModelStep =
   | ModelResponse
   | Error
-  | ((request: ModelRequest, signal: AbortSignal) => ModelResponse | Promise<ModelResponse>);
+  | ((
+      request: ModelRequest,
+      signal: AbortSignal,
+      observer: ModelStreamObserver | undefined,
+    ) => ModelResponse | Promise<ModelResponse>);
 
 class ScriptedModel implements ModelClient {
   public readonly requests: ModelRequest[] = [];
+  public readonly observers: (ModelStreamObserver | undefined)[] = [];
 
   public constructor(private readonly steps: ModelStep[]) {}
 
   public async complete(
     request: ModelRequest,
     signal: AbortSignal,
+    observer?: ModelStreamObserver,
   ): Promise<ModelResponse> {
     this.requests.push(structuredClone(request));
+    this.observers.push(observer);
     const step = this.steps.shift();
     if (step === undefined) {
       throw new Error("scripted model ran out of responses");
@@ -47,7 +56,17 @@ class ScriptedModel implements ModelClient {
     if (step instanceof Error) {
       throw step;
     }
-    return typeof step === "function" ? await step(request, signal) : step;
+    return typeof step === "function"
+      ? await step(request, signal, observer)
+      : step;
+  }
+}
+
+class RecordingStreamObserver implements ModelStreamObserver {
+  public readonly events: ModelStreamEvent[] = [];
+
+  public onModelStreamEvent(event: ModelStreamEvent): void {
+    this.events.push(structuredClone(event));
   }
 }
 
@@ -134,12 +153,16 @@ function makeAgent(options: {
   readonly tools?: ToolExecutor;
   readonly events?: EventEmitter;
   readonly limits?: Partial<AgentLimits>;
+  readonly modelStreamObserver?: ModelStreamObserver;
 }): CodingAgent {
   return new CodingAgent({
     model: options.model,
     tools: options.tools ?? new ScriptedTools(),
     approver: new AllowAllApprover(),
     events: options.events ?? new RecordingEvents(),
+    ...(options.modelStreamObserver === undefined
+      ? {}
+      : { modelStreamObserver: options.modelStreamObserver }),
     systemPrompt: "test system",
     limits: {
       maxDurationMs: 2_000,
@@ -368,15 +391,26 @@ test("CodingAgent retries only the model request and does not repeat tools", asy
     retryAfterMs: 0,
   });
   const call = toolCall("only-once");
+  const observer = new RecordingStreamObserver();
   const model = new ScriptedModel([
     response({
       content: null,
       finishReason: "tool_calls",
       toolCalls: [call],
     }),
-    retryable,
-    (request) => {
+    (_request, _signal, attemptObserver) => {
+      attemptObserver?.onModelStreamEvent({
+        type: "content_delta",
+        delta: "partial failed attempt",
+      });
+      throw retryable;
+    },
+    (request, _signal, attemptObserver) => {
       assert.deepEqual(request, model.requests[1]);
+      attemptObserver?.onModelStreamEvent({
+        type: "content_delta",
+        delta: "recovered",
+      });
       return response({ content: "recovered" });
     },
   ]);
@@ -388,6 +422,7 @@ test("CodingAgent retries only the model request and does not repeat tools", asy
       model,
       tools,
       events,
+      modelStreamObserver: observer,
       limits: { maxModelRetries: 1 },
     }),
   );
@@ -396,7 +431,28 @@ test("CodingAgent retries only the model request and does not repeat tools", asy
   assert.equal(outcome.modelAttempts, 3);
   assert.equal(outcome.turns, 2);
   assert.equal(tools.calls.length, 1);
-  assert.ok(events.records.some((event) => event.type === "model_retry_scheduled"));
+  assert.equal(model.observers.length, 3);
+  assert.ok(model.observers.every((candidate) => candidate === observer));
+  assert.deepEqual(observer.events, [
+    { type: "content_delta", delta: "partial failed attempt" },
+    { type: "content_delta", delta: "recovered" },
+  ]);
+  assert.deepEqual(
+    events.records.map((event) => event.type),
+    [
+      "session_started",
+      "model_request_started",
+      "model_response",
+      "tool_started",
+      "tool_finished",
+      "model_request_started",
+      "model_request_failed",
+      "model_retry_scheduled",
+      "model_request_started",
+      "model_response",
+      "session_finished",
+    ],
+  );
 });
 
 test("CodingAgent does not retry a non-retryable model error", async () => {

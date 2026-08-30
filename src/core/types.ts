@@ -43,6 +43,34 @@ export interface ModelResponse {
   readonly usage: Usage;
 }
 
+export type ModelStreamEvent =
+  | {
+      readonly type: "reasoning_delta";
+      readonly delta: string;
+    }
+  | {
+      readonly type: "content_delta";
+      readonly delta: string;
+    }
+  | {
+      readonly type: "tool_call_delta";
+      readonly index: number;
+      readonly nameDelta?: string;
+      readonly argumentsDelta?: string;
+    };
+
+/**
+ * Receives best-effort, ephemeral model progress. Implementations must not
+ * throw: durable state is committed only after complete() returns.
+ */
+export interface ModelStreamObserver {
+  onModelStreamEvent(event: ModelStreamEvent): void;
+}
+
 export interface ModelClient {
-  complete(request: ModelRequest, signal: AbortSignal): Promise<ModelResponse>;
+  complete(
+    request: ModelRequest,
+    signal: AbortSignal,
+    observer?: ModelStreamObserver,
+  ): Promise<ModelResponse>;
 }

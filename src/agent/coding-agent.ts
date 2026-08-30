@@ -4,6 +4,7 @@ import type {
   Message,
   ModelClient,
   ModelResponse,
+  ModelStreamObserver,
   ToolCall,
   Usage,
 } from "../core/types.js";
@@ -54,6 +55,7 @@ export interface CodingAgentDependencies {
   readonly tools: ToolExecutor;
   readonly approver: Approver;
   readonly events: EventEmitter;
+  readonly modelStreamObserver?: ModelStreamObserver;
   readonly limits?: Partial<AgentLimits>;
   readonly systemPrompt?: string;
 }
@@ -84,6 +86,7 @@ export class CodingAgent {
   readonly #tools: ToolExecutor;
   readonly #approver: Approver;
   readonly #events: EventEmitter;
+  readonly #modelStreamObserver: ModelStreamObserver | undefined;
   readonly #limits: AgentLimits;
   readonly #systemPrompt: string;
 
@@ -92,6 +95,7 @@ export class CodingAgent {
     this.#tools = dependencies.tools;
     this.#approver = dependencies.approver;
     this.#events = dependencies.events;
+    this.#modelStreamObserver = dependencies.modelStreamObserver;
     this.#limits = validateLimits({ ...DEFAULT_LIMITS, ...dependencies.limits });
     this.#systemPrompt = dependencies.systemPrompt ?? DEFAULT_SYSTEM_PROMPT;
   }
@@ -306,6 +310,7 @@ export class CodingAgent {
         return await this.#model.complete(
           { messages: [...messages], tools: this.#tools.definitions },
           signal,
+          this.#modelStreamObserver,
         );
       } catch (error) {
         const normalized = error instanceof Error ? error : new Error(String(error));

@@ -79,42 +79,52 @@ async function openMockServer(t: test.TestContext): Promise<MockServer> {
       body: await readJsonBody(request),
     });
     if (requests.length === 1) {
-      sendJson(response, {
-        choices: [
-          {
-            finish_reason: "tool_calls",
-            message: {
-              role: "assistant",
-              content: null,
-              reasoning_content: REASONING_CONTENT,
-              tool_calls: [
-                {
-                  id: TOOL_CALL_ID,
-                  type: "function",
-                  function: {
-                    name: "write_file",
-                    arguments: TOOL_ARGUMENTS,
-                  },
-                },
-              ],
+      sendSse(response, [
+        streamDelta({
+          role: "assistant",
+          reasoning_content: REASONING_CONTENT.slice(0, 18),
+        }),
+        streamDelta({ reasoning_content: REASONING_CONTENT.slice(18) }),
+        streamDelta({
+          tool_calls: [
+            {
+              index: 0,
+              id: TOOL_CALL_ID,
+              type: "function",
+              function: {
+                name: "write_",
+                arguments: TOOL_ARGUMENTS.slice(0, 24),
+              },
             },
-          },
-        ],
-        usage: { prompt_tokens: 10, completion_tokens: 4 },
-      });
+          ],
+        }),
+        streamDelta({
+          tool_calls: [
+            {
+              index: 0,
+              function: {
+                name: "file",
+                arguments: TOOL_ARGUMENTS.slice(24),
+              },
+            },
+          ],
+        }),
+        streamDelta({}, "tool_calls"),
+        streamUsage(10, 4),
+      ]);
       return;
     }
     if (requests.length === 2) {
       assertSecondRequestBody(requests[1]?.body);
-      sendJson(response, {
-        choices: [
-          {
-            finish_reason: "stop",
-            message: { role: "assistant", content: FINAL_ANSWER },
-          },
-        ],
-        usage: { prompt_tokens: 18, completion_tokens: 6 },
-      });
+      sendSse(response, [
+        streamDelta({
+          role: "assistant",
+          content: FINAL_ANSWER.slice(0, 22),
+        }),
+        streamDelta({ content: FINAL_ANSWER.slice(22) }),
+        streamDelta({}, "stop"),
+        streamUsage(18, 6),
+      ]);
       return;
     }
     sendJson(response, { error: { message: "unexpected model turn" } }, 400);
@@ -163,6 +173,34 @@ function sendJson(response: ServerResponse, body: unknown, status = 200): void {
   response.statusCode = status;
   response.setHeader("content-type", "application/json");
   response.end(JSON.stringify(body));
+}
+
+function sendSse(response: ServerResponse, payloads: readonly unknown[]): void {
+  response.statusCode = 200;
+  response.setHeader("content-type", "text/event-stream");
+  for (const payload of payloads) {
+    response.write(`data: ${JSON.stringify(payload)}\n\n`);
+  }
+  response.end("data: [DONE]\n\n");
+}
+
+function streamDelta(
+  delta: Readonly<Record<string, unknown>>,
+  finishReason: string | null = null,
+): Record<string, unknown> {
+  return {
+    choices: [{ index: 0, delta, finish_reason: finishReason }],
+  };
+}
+
+function streamUsage(promptTokens: number, completionTokens: number): unknown {
+  return {
+    choices: [],
+    usage: {
+      prompt_tokens: promptTokens,
+      completion_tokens: completionTokens,
+    },
+  };
 }
 
 async function runCli(
@@ -280,6 +318,8 @@ function array(value: unknown, label: string): unknown[] {
 function assertSecondRequestBody(value: unknown): void {
   const body = record(value, "second request");
   assert.equal(body.model, MODEL);
+  assert.equal(body.stream, true);
+  assert.deepEqual(body.stream_options, { include_usage: true });
   const messages = array(body.messages, "second messages");
   assert.equal(messages.length, 4);
   assert.equal(record(messages[0], "system message").role, "system");
@@ -340,10 +380,12 @@ test(
       FILE_CONTENT,
     );
     assert.match(result.stderr, /Nash session /);
-    assert.match(result.stderr, /#001 session started/);
-    assert.match(result.stderr, /model requested write_file/);
-    assert.match(result.stderr, /✓ write_file/);
-    assert.match(result.stderr, /session finished · final_answer/);
+    assert.match(result.stderr, /session started/i);
+    assert.match(result.stderr, /write_file/);
+    assert.match(result.stderr, /[✓✔].*write_file|write_file.*[✓✔]/s);
+    assert.match(result.stderr, /session finished.*final_answer/is);
+    assert.doesNotMatch(result.stderr, /\u001b\[/);
+    assert.doesNotMatch(result.stderr, /opaque reasoning state/);
 
     assert.equal(mock.requests.length, 2);
     for (const request of mock.requests) {
@@ -354,6 +396,8 @@ test(
     }
 
     const firstBody = record(mock.requests[0]?.body, "first request");
+    assert.equal(firstBody.stream, true);
+    assert.deepEqual(firstBody.stream_options, { include_usage: true });
     const firstMessages = array(firstBody.messages, "first messages");
     assert.equal(record(firstMessages[1], "user message").content, TASK);
     const tools = array(firstBody.tools, "tools");
@@ -387,6 +431,11 @@ test(
         "model_response",
         "session_finished",
       ],
+    );
+    assert.equal(
+      events.some((event) => event.type.includes("delta")),
+      false,
+      "ephemeral stream deltas must not be persisted in the semantic trace",
     );
     assert.equal(
       path.basename(traceFile.name, ".jsonl"),
