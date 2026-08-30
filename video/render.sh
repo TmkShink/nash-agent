@@ -3,7 +3,7 @@
 set -euo pipefail
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-run_id="${1:-$(sed -n '1p' "$repo_root/.nash/video/latest-run.txt")}"
+run_id="${1:-$(sed -n '1p' "$repo_root/.nash/video/latest-live-run.txt")}"
 run_root="$repo_root/.nash/video/$run_id"
 raw_dir="$run_root/raw"
 clip_dir="$run_root/clips"
@@ -11,53 +11,75 @@ caption_dir="$run_root/captions"
 output="$run_root/nash-demo-submission.mp4"
 mkdir -p "$clip_dir" "$caption_dir"
 
-segments=(intro architecture replay diff grader inspect stats end)
-clip_durations=(6 8 30 14 14 14 14 8)
+terminal_input="$raw_dir/terminal.mov"
+evidence_input="$raw_dir/evidence.mov"
+browser_input="$raw_dir/browser-final.mov"
+test -s "$terminal_input"
+test -s "$evidence_input"
+test -s "$browser_input"
 
-for index in "${!segments[@]}"; do
-  segment="${segments[$index]}"
-  duration="${clip_durations[$index]}"
-  input="$raw_dir/$segment.mov"
-  clip="$clip_dir/$segment.mp4"
-  test -s "$input"
+encode_clip() {
+  local input="$1"
+  local start="$2"
+  local duration="$3"
+  local filter="$4"
+  local output_path="$5"
 
   ffmpeg -y -hide_banner -loglevel error \
-    -ss 1 -i "$input" -t "$duration" \
-    -vf "crop=2872:1490:160:210,scale=1760:-2:flags=lanczos,pad=1920:1080:80:0:black,fps=30,format=yuv420p" \
+    -ss "$start" -i "$input" -t "$duration" \
+    -vf "$filter,fps=30,format=yuv420p" \
     -an -c:v libx264 -preset medium -crf 18 \
-    "$clip"
-done
+    "$output_path"
+}
+
+# 终端内容会自然向下滚动。前 12 秒缓慢下移裁剪窗口，既保留完整指令，
+# 也能在后半段持续看到当前工具卡片和最终统计。
+encode_clip \
+  "$terminal_input" 17.5 72.5 \
+  "crop=4096:1946:0:'180+min(t/12,1)*522',scale=1920:912:flags=lanczos,pad=1920:1080:0:0:black" \
+  "$clip_dir/terminal.mp4"
+
+encode_clip \
+  "$evidence_input" 15.3 9.2 \
+  "crop=4096:1946:0:300,scale=1920:912:flags=lanczos,pad=1920:1080:0:0:black" \
+  "$clip_dir/evidence.mp4"
+
+encode_clip \
+  "$browser_input" 11 29 \
+  "crop=4096:1946:0:250,scale=1920:912:flags=lanczos,pad=1920:1080:0:0:black" \
+  "$clip_dir/browser.mp4"
 
 concat_file="$run_root/concat.txt"
 : >"$concat_file"
-for segment in "${segments[@]}"; do
-  printf "file '%s'\n" "$clip_dir/$segment.mp4" >>"$concat_file"
+for clip in terminal evidence browser; do
+  printf "file '%s'\n" "$clip_dir/$clip.mp4" >>"$concat_file"
 done
 
 joined="$run_root/joined.mp4"
 ffmpeg -y -hide_banner -loglevel error \
   -f concat -safe 0 -i "$concat_file" -c copy "$joined"
+total_duration="$(ffprobe -v error -show_entries format=duration -of csv=p=0 "$joined")"
 
 export CLANG_MODULE_CACHE_PATH="$run_root/swift-module-cache"
 export SWIFT_MODULECACHE_PATH="$run_root/swift-module-cache"
 xcrun swift "$repo_root/video/render-captions.swift" \
   "$repo_root/video/subtitles.zh.srt" \
-  "$caption_dir"
+  "$caption_dir" \
+  "$total_duration"
 
 caption_video="$caption_dir/caption-timeline.mp4"
 ffmpeg -y -hide_banner -loglevel error \
   -f concat -safe 0 -i "$caption_dir/caption-timeline.ffconcat" \
-  -t 108 -vf "fps=30,format=yuv420p" \
+  -t "$total_duration" -vf "fps=30,format=yuv420p" \
   -an -c:v libx264 -preset veryfast -crf 18 \
   "$caption_video"
 
 ffmpeg -y -hide_banner -loglevel error \
   -i "$joined" \
   -i "$caption_video" \
-  -loop 1 -framerate 1 -i "$caption_dir/replay-label.png" \
   -f lavfi -i anullsrc=channel_layout=stereo:sample_rate=48000 \
-  -filter_complex "[0:v][1:v]overlay=0:912:shortest=1[captioned];[captioned][2:v]overlay=1570:24:enable='between(t,14,44)'[video]" \
-  -map "[video]" -map 3:a:0 -t 108 \
+  -filter_complex "[0:v][1:v]overlay=0:912:shortest=1[video]" \
+  -map "[video]" -map 2:a:0 -t "$total_duration" \
   -c:v libx264 -preset fast -crf 20 -pix_fmt yuv420p \
   -c:a aac -b:a 128k -shortest -movflags +faststart \
   "$output"

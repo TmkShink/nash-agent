@@ -16,7 +16,7 @@ enum CaptionError: Error, CustomStringConvertible {
   var description: String {
     switch self {
     case .usage:
-      return "usage: render-captions.swift <subtitles.srt> <output-directory>"
+      return "usage: render-captions.swift <subtitles.srt> <output-directory> <duration>"
     case let .invalidCue(value):
       return "invalid SRT cue: \(value)"
     case .cannotCreateBitmap:
@@ -156,7 +156,9 @@ func writePNG(text: String, destination: URL, placement: String) throws {
 }
 
 do {
-  guard CommandLine.arguments.count == 3 else {
+  guard CommandLine.arguments.count == 4,
+        let totalDuration = Double(CommandLine.arguments[3]),
+        totalDuration > 0 else {
     throw CaptionError.usage
   }
   let source = URL(fileURLWithPath: CommandLine.arguments[1])
@@ -189,9 +191,12 @@ do {
     cursor = cue.end
     lastPath = destination.path
   }
-  if cursor < 108 {
+  guard cursor <= totalDuration else {
+    throw CaptionError.invalidCue("last cue exceeds video duration")
+  }
+  if cursor < totalDuration {
     timeline += "file '\(blank.path)'\n"
-    timeline += String(format: "duration %.3f\n", 108 - cursor)
+    timeline += String(format: "duration %.3f\n", totalDuration - cursor)
     lastPath = blank.path
   }
   // concat demuxer 需要重复最后一帧，才能保留上一行声明的 duration。
@@ -201,9 +206,6 @@ do {
     atomically: true,
     encoding: .utf8
   )
-
-  let replayLabel = outputDirectory.appendingPathComponent("replay-label.png")
-  try writePNG(text: "真实会话回放", destination: replayLabel, placement: "label")
 } catch {
   throwFatal(String(describing: error))
 }

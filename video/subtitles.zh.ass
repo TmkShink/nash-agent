@@ -1,5 +1,5 @@
 [Script Info]
-Title: Nash demo Chinese subtitles
+Title: Nash live demo Chinese subtitles
 ScriptType: v4.00+
 PlayResX: 1920
 PlayResY: 1080
@@ -9,23 +9,20 @@ ScaledBorderAndShadow: yes
 [V4+ Styles]
 Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
 Style: Default,PingFang SC,46,&H00FFFFFF,&H000000FF,&H00000000,&H00000000,0,0,0,0,100,100,0,0,1,2,0,2,90,90,48,1
-Style: Label,PingFang SC,28,&H00FFFFFF,&H000000FF,&H00000000,&H88000000,0,0,0,0,100,100,0,0,3,0,0,9,30,45,28,1
 
 [Events]
 Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
-Dialogue: 0,0:00:00.50,0:00:05.60,Default,,0,0,0,,Nash 是我从零实现的 TypeScript Coding Agent。
-Dialogue: 0,0:00:06.50,0:00:13.50,Default,,0,0,0,,模型选择下一步；本地 runtime 负责工具、审批、预算和 JSONL 轨迹。
-Dialogue: 0,0:00:14.50,0:00:19.50,Default,,0,0,0,,下面是一条真实 DeepSeek 会话的回放。
-Dialogue: 0,0:00:19.50,0:00:28.00,Default,,0,0,0,,Agent 先读取 README、实现和公开测试。
-Dialogue: 0,0:00:28.00,0:00:38.00,Default,,0,0,0,,它复现失败，随后完成三次精确编辑和验证。
-Dialogue: 0,0:00:38.00,0:00:43.50,Default,,0,0,0,,每次模型请求和工具结果都写入 JSONL。
-Dialogue: 1,0:00:14.00,0:00:44.00,Label,,0,0,0,,真实会话回放
-Dialogue: 0,0:00:44.50,0:00:50.50,Default,,0,0,0,,修复为每个 lease 分配单调递增的 generation。
-Dialogue: 0,0:00:50.50,0:00:57.50,Default,,0,0,0,,过期回调只能删除自己创建的那一代。
-Dialogue: 0,0:00:58.50,0:01:04.00,Default,,0,0,0,,Agent 执行任务时看不到隐藏测试。
-Dialogue: 0,0:01:04.00,0:01:11.50,Default,,0,0,0,,独立 grader 覆盖 timer handle 复用，最终 7/7 通过。
-Dialogue: 0,0:01:12.50,0:01:18.50,Default,,0,0,0,,inspect 严格校验 JSONL，并还原每个模型请求和工具结果。
-Dialogue: 0,0:01:18.50,0:01:25.50,Default,,0,0,0,,这次运行耗时 45.8 秒，共 10 个 turn、13 次工具调用。
-Dialogue: 0,0:01:26.50,0:01:33.50,Default,,0,0,0,,固定提交连续运行五次，其中四次通过独立 grader。
-Dialogue: 0,0:01:33.50,0:01:39.50,Default,,0,0,0,,失败样本也被完整保留，没有靠剪辑抹掉。
-Dialogue: 0,0:01:40.50,0:01:47.50,Default,,0,0,0,,仓库保留核心实现、测试和完整提交历史。
+Dialogue: 0,0:00:00.20,0:00:03.40,Default,,0,0,0,,Nash 是一个 TypeScript Coding Agent。
+Dialogue: 0,0:00:03.80,0:00:08.80,Default,,0,0,0,,一条命令同时给出任务目标、文件边界和验收要求。
+Dialogue: 0,0:00:09.20,0:00:17.50,Default,,0,0,0,,模型输出按 SSE 到达；终端只节流重绘，不展示原始思维链。
+Dialogue: 0,0:00:18.00,0:00:27.00,Default,,0,0,0,,List、Read、Write、Edit 和 Bash 使用不同卡片，状态与耗时实时更新。
+Dialogue: 0,0:00:27.50,0:00:37.00,Default,,0,0,0,,Agent 先读需求和公开测试，再分别实现纯游戏引擎与浏览器层。
+Dialogue: 0,0:00:37.50,0:00:47.00,Default,,0,0,0,,流式参数负责即时反馈；完整工具参数由聚合器统一校验。
+Dialogue: 0,0:00:47.50,0:00:58.00,Default,,0,0,0,,工具的退出码和 stderr 会回传给 Agent，供它判断并调整下一步。
+Dialogue: 0,0:00:58.50,0:01:09.50,Default,,0,0,0,,这次现场运行共 13 个 turn、16 次工具调用，耗时 68.1 秒。
+Dialogue: 0,0:01:10.00,0:01:16.50,Default,,0,0,0,,公开测试与隐藏测试彼此隔离，Agent 运行期间只能看到公开契约。
+Dialogue: 0,0:01:17.00,0:01:21.50,Default,,0,0,0,,隐藏测试 21/21，四个受保护输入文件哈希保持不变。
+Dialogue: 0,0:01:22.00,0:01:29.00,Default,,0,0,0,,最后直接操作 Nash 独立生成的 2048 页面。
+Dialogue: 0,0:01:29.50,0:01:36.00,Default,,0,0,0,,现场检查键盘移动和指针滑动，Score 会正常累计。
+Dialogue: 0,0:01:36.50,0:01:42.50,Default,,0,0,0,,New Game 把 Score 清零，Best 仍然保留。
+Dialogue: 0,0:01:43.00,0:01:50.20,Default,,0,0,0,,页面还支持响应式布局和本地 Best 记录，可以直接在浏览器运行。
