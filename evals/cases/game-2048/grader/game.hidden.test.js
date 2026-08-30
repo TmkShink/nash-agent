@@ -361,7 +361,35 @@ test("the page exposes the game UI through a native module entry point", async (
   assert.equal(hasHook(html, ["score", "current-score"]), true, "missing score hook");
   assert.equal(hasHook(html, ["best", "best-score"]), true, "missing best-score hook");
   assert.equal(hasHook(html, ["restart", "new-game"]), true, "missing New Game hook");
-  assert.equal(hasHook(html, ["status", "game-status"]), true, "missing status hook");
+  const elementTags = html.match(/<[a-z][^>]*>/gi) ?? [];
+  const hasAccessibleStatusRegion =
+    hasHook(html, ["status", "game-status"]) ||
+    elementTags.some((tag) => {
+      const hasLiveRole = /\brole\s*=\s*["'](?:status|alert)["']/i.test(tag);
+      const hasLiveAttribute =
+        /\baria-live\s*=\s*["'](?:polite|assertive)["']/i.test(tag);
+      const describesGameStatus =
+        /^<output\b/i.test(tag) ||
+        hasHook(tag, [
+          "status",
+          "game-status",
+          "message",
+          "game-message",
+          "overlay",
+          "result",
+          "outcome",
+          "announcement",
+        ]) ||
+        /\baria-label\s*=\s*["'][^"']*(?:status|result|win|loss|message)[^"']*["']/i.test(
+          tag,
+        );
+      return hasLiveRole || (hasLiveAttribute && describesGameStatus);
+    });
+  assert.equal(
+    hasAccessibleStatusRegion,
+    true,
+    "the game must expose an accessible live status region for win and loss announcements",
+  );
 });
 
 test("the browser controller wires keyboard, swipe, storage, and scroll handling", async () => {
@@ -400,17 +428,22 @@ test("the stylesheet keeps a four-column board usable on narrow screens", async 
 
   const hasNarrowScreenMediaQuery =
     /@media\b[^{}]*(?:width|orientation)\s*(?::|[<>=])/i.test(styles);
-  const viewportWidthDeclarations = [
-    ...styles.matchAll(
-      /\b(?:width|inline-size)\s*:\s*([^;{}]*(?:vw|vmin|vmax|dvw|svw|lvw)[^;{}]*)[;}]/gi,
-    ),
-  ].map((match) => match[1]);
-  const hasBoundedViewportWidth =
-    viewportWidthDeclarations.some((value) =>
-      /\b(?:min|max|clamp|calc)\s*\(/i.test(value),
-    ) ||
-    (viewportWidthDeclarations.length > 0 &&
-      /\bmax-(?:width|inline-size)\s*:\s*[^;{}]+[;}]/i.test(styles));
+  const ruleBlocks = [...styles.matchAll(/[^{}]+\{([^{}]*)\}/g)].map(
+    (match) => match[1],
+  );
+  const hasBoundedFluidContainer = ruleBlocks.some((block) => {
+    const width = block.match(
+      /(?:^|;)\s*(?:width|inline-size)\s*:\s*([^;]+)/i,
+    )?.[1];
+    if (width === undefined || !/(?:%|vw|vmin|vmax|dvw|svw|lvw)/i.test(width)) {
+      return false;
+    }
+
+    const usesBoundedFunction = /\b(?:min|max|clamp|calc)\s*\(/i.test(width);
+    const hasMaximum =
+      /(?:^|;)\s*max-(?:width|inline-size)\s*:\s*[^;]+/i.test(block);
+    return usesBoundedFunction || hasMaximum;
+  });
   const hasScalableType =
     /font-size\s*:\s*[^;{}]*(?:clamp|min|max|calc)\s*\(/i.test(styles) ||
     /font-size\s*:\s*[^;{}]*(?:vw|vmin|vmax|dvw|svw|lvw)/i.test(styles);
@@ -418,7 +451,7 @@ test("the stylesheet keeps a four-column board usable on narrow screens", async 
     styles,
   );
   const hasFluidNarrowScreenLayout =
-    hasBoundedViewportWidth && (hasScalableType || hasSquareTiles);
+    hasBoundedFluidContainer && (hasScalableType || hasSquareTiles);
 
   assert.equal(
     hasNarrowScreenMediaQuery || hasFluidNarrowScreenLayout,
