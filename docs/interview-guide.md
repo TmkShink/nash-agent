@@ -4,11 +4,13 @@
 
 ## 一分钟介绍
 
-Nash 是我用 TypeScript 从零实现的 Coding Agent。核心是自由的 model-tool loop：DeepSeek 根据当前对话选择读文件、改文件或执行命令，runtime 负责严格解析参数、限制工作区、审批副作用、控制预算，并把每次状态转换写入 JSONL。
+Nash 是我用 TypeScript 从零实现的 Coding Agent。核心是自由的 model-tool loop：DeepSeek 根据当前上下文选择读文件、改文件或执行命令，runtime 负责解析流式响应、限制工作区、审批副作用、控制预算，并把稳定的状态转换写入 JSONL。
 
-我没有追求 Claude Code 那样完整的产品面，也没有只做一个把 shell 暴露给模型的最小循环。Nash 的重点是三条可解释边界：第一，provider 重试不能重放本地副作用；第二，文件和命令必须经过 `prepare → approve → execute`；第三，失败、预算和崩溃窗口必须能从 trace 中看见。
+终端能实时显示模型阶段、可见正文和不同类型的工具卡片，但流式画面不等于执行提交。SSE 完整结束、tool arguments 聚合并校验通过后，Nash 才会执行工具。这样既有及时反馈，也保留清晰的重试和副作用边界。
 
-真实评测里，DeepSeek 修复了一个旧计时回调误删新值的竞态。第一版修复通过公开测试，但 hidden grader 用 timer handle 复用击穿了它。固定提交连续运行五次，四次通过 hidden grader，一次仍违反显式契约；耗时 p50 为 45.8 秒，p95 为 63.1 秒。这个结果既证明端到端链路可用，也保留了模型自信但错误的样本。
+主评测要求 Nash 从空白工作区完成一个 2048 网页。Agent 运行时只能看到需求和 7 项公开测试，停止后才加入 14 项 hidden tests。正式样本在 61.7 秒内完成 12 个 turn、15 次工具调用，最终 `21/21`，四个受保护输入文件没有变化。这个结果证明固定任务上的端到端链路成立，不代表任意仓库的总体成功率。
+
+我会重点解释三条边界：流式反馈与权威状态分开；provider 重试不能重放本地副作用；模型自称完成必须再经过独立 grader。
 
 ## 方案选择
 
@@ -32,19 +34,43 @@ Nash 是我用 TypeScript 从零实现的 Coding Agent。核心是自由的 mode
 
 **问：一轮的提交点在哪里？**
 
-非流式模型响应完整到达并通过 schema 校验后，才算模型提交。没有 tool call 时检查 finish reason 和 final content；有 tool call 时先检查整批工具预算，再把 assistant message 加入历史并依次执行。每个 tool result 按原 call ID 写回。
+收到 SSE 的 `[DONE]`，且聚合后的 response schema、finish reason 和全部 tool calls 都通过校验，才算模型提交。没有 tool call 时检查 final content；有 tool call 时先检查整批工具预算，再把 assistant message 加入历史并依次执行。每个 tool result 按原 call ID 写回。
 
 **问：DeepSeek 为什么需要保存 `reasoning_content`？**
 
 thinking 模式下，DeepSeek 要求后续工具轮次把 assistant 的 `reasoning_content` 原样传回，遗漏会得到 400。Nash 把它当作不透明 continuation state，只存储和续传，不解释、不显示，trace 只记字符数。控制逻辑不能依赖隐藏推理文本。
 
-**问：为什么先做非流式？**
+**问：tool call arguments 被拆到很多 chunk，怎样保证拼接正确？**
 
-非流式给出完整 tool-call envelope，网络重试边界容易证明。流式 tool arguments 可能跨 chunk，断线后要处理 partial JSON、call ID 去重和是否已经执行。当前视频更需要稳定的动作时间线，首字延迟收益不够覆盖这套复杂度。
+不能按网络 chunk 解析 JSON。Nash 先用增量 UTF-8 decoder 处理断开的多字节字符，再按 SSE 空行分发事件，最后按 `tool_call.index` 分别累加 ID、name 和 arguments。流结束后检查 index 从 0 连续、ID 非空且不重复，再把完整 arguments 交给 ToolRegistry 解析。测试会覆盖 UTF-8、SSE 行、多个交错 tool calls 和参数跨 chunk 的情况。
+
+**追问：为什么流里已经看见完整 JSON，还要等 `[DONE]`？**
+
+因为后续 chunk 仍可能追加参数、改变 finish reason，连接也可能在服务端正式提交前中断。以“当前看起来能 parse”为边界会把传输状态误当成协议状态。Nash 在 `[DONE]` 前只展示进度，不执行副作用。
+
+**问：SSE 中断时，用户已经看到的正文怎么办？**
+
+这段正文是 provisional UI。TerminalUI 会显示本次 attempt 失败和 retry，权威历史里不会加入残缺响应。这样可能出现少量视觉回退，但不会让半条 assistant message 或半个 tool call 污染状态。若产品要求完全无回退，可以先缓冲正文，代价是失去逐字反馈。
+
+**问：为什么 ModelStreamObserver 失败不能让 Agent 停止？**
+
+observer 只负责即时反馈；终端不支持光标控制、输出 pipe 关闭或 UI 代码出错，都不应改变编码任务结果。accumulator 不依赖 observer，回调异常会被吞掉。稳定事件进入 EventBus 后属于另一条路径，trace sink 失败会停止 Agent，因为此后继续执行副作用会失去记录。
+
+**问：为什么不把每个 delta 都写进 JSONL？**
+
+token 级事件会显著放大文件和 fsync 次数，也把刷新频率耦合进 trace schema。inspect 和恢复判断只需要完整模型响应、最终 tool calls 和工具生命周期。Nash 因此把 delta 定义为临时显示状态，聚合后的 `model_response` 才是持久状态。代价是 replay 不能逐 token 还原原始输出速度。
+
+**追问：流式输出有 backpressure 吗？**
+
+状态行按 80ms 节流，避免每个 reasoning delta 都重绘；可见正文仍直接写终端，当前没有为超长正文建立完整的异步 backpressure 队列。8 MiB response cap 能限制内存和协议输入，不能完全替代 stdout 流控。这是当前 UI 的边界，服务化时应让 observer 返回可等待结果，或在独立 ring buffer 中降采样显示事件。
 
 **问：finish reason 和正文冲突怎么办？**
 
-runtime 不猜。`length` 映射为 incomplete，`content_filter` 单独终止；finish reason 是 `tool_calls` 但没有 call，或有 call 却不是 `tool_calls`，都视为无效响应。正文为空且没有工具也不会当成成功。
+runtime 不猜。`length` 通常映射为 incomplete，只有窄条件下允许一次 reasoning-only 续写；`content_filter` 单独终止。finish reason 是 `tool_calls` 但没有 call，或有 call 却不是 `tool_calls`，都视为无效响应。正文为空且没有工具也不会当成成功。
+
+**追问：模型只输出了 reasoning，随后因为长度上限停止，为什么不立刻失败？**
+
+这可能是思考额度用完、最终动作还没开始。Nash 只在“有 reasoning、无正文、无 tool call”的窄条件下追加一次明确续写请求，并把它计为新的 turn。已经出现残缺正文或工具参数时不续写，避免把两段语义不明的输出拼成一次调用。传输 retry 重做未提交的同一请求，语义续写保留前一条 assistant 状态，两者不能混用。
 
 ## 重试与 exactly-once
 
@@ -120,7 +146,7 @@ system prompt 明确普通文件和命令输出是数据，不能覆盖用户或
 
 **问：trace 写失败为什么让 Agent 停止？**
 
-如果审计已经失效还继续执行副作用，最终无法解释系统做过什么。sink failure 会变成 sticky，后续 emit 继续失败，Agent 返回 `trace_error`。Console sink 也属于 EventBus；生产版可以把 UI failure 降级，但当前选择了更严格的一致性。
+如果稳定事件无法持久化还继续执行副作用，最终无法解释系统做过什么。sink failure 会变成 sticky，后续 emit 继续失败，Agent 返回 `trace_error`。流式进度走独立 observer，显示失败会降级；终端中的稳定事件仍属于 EventBus，当前与文件 sink 共享严格策略。生产版可以再把 console sink 和 durable sink 分组，只有持久化失败才阻止执行。
 
 **问：JSONL 能做确定性 replay 吗？**
 
@@ -130,6 +156,14 @@ system prompt 明确普通文件和命令输出是数据，不能覆盖用户或
 
 不能。权限是 `0600`，schema 和 sequence 会校验，但拥有本地写权限的人可以离线改文件。若用于外部证明，需要 hash chain、签名和可信时间源。
 
+**追问：既然不保存 reasoning 正文，能否从 trace 恢复会话继续跑？**
+
+当前不能保证。inspect 和 replay 的目标是检查稳定事件，不是进程恢复。DeepSeek 带 tools 的后续请求可能需要完整 `reasoning_content`，而 trace 只记字符数；悬空工具也无法仅凭 started 事件判断副作用是否完成。若要支持 resume，需要单独的加密 checkpoint，保存完整 message state、workspace revision、provider 配置和 pending action，并对非幂等工具要求人工确认。
+
+**问：线上应该看哪些指标？**
+
+顶层指标是独立 grader 或用户验收通过率，不能用 final answer 率代替。诊断指标包括 time-to-first-feedback、每 turn 延迟、模型 retry、tool error、重复失败停止、token 与 cache、人工拒绝率、预算终止率和悬空工具数。指标要按模型、版本、任务族和预算切分；只看平均耗时会掩盖长尾与失败样本。
+
 ## 预算和上下文
 
 **问：token 已经超预算，为什么请求还是发出去了？**
@@ -138,17 +172,45 @@ system prompt 明确普通文件和命令输出是数据，不能覆盖用户或
 
 **问：当前为什么没有 context compaction？**
 
-先保证消息协议和 tool call/result 配对正确。完整历史配合有界工具输出容易验证，固定提交五次评测的 input cache 命中约 90.9%。缺点是 input 快速增长，五次合计 311,413 input token。Compaction 需要保留最新目标、未解决错误、tool 配对和 DeepSeek reasoning 续传，还要用差分 eval 证明摘要没有改变约束。
+先保证消息协议和 tool call/result 配对正确。完整历史配合有界工具输出容易验证；2048 正式样本约 93.6% 的 input token 命中 prompt cache。缺点是 input 仍会快速增长，该样本 12 个 turn 已累计 121,215 input token。Compaction 需要保留最新目标、未解决错误、tool 配对和 DeepSeek reasoning 续传，还要用差分 eval 证明摘要没有改变约束。
+
+**追问：如果现在让你实现 compaction，边界放在哪里？**
+
+只在一次完整模型响应和整批 tool results 都写回后压缩，不能切在悬空 tool call 中间。保留 system、原始用户目标、最近未解决的错误、当前文件事实和最近若干原始轮次；更早历史转成带来源的结构化摘要。DeepSeek 带 tools 时要求续传 reasoning，因此需要在压缩点结束当前用户交互段，或确认新请求不再依赖被删掉的 thinking 状态。上线前用同一任务集做 full-history 与 compacted-history 配对实验，重点检查约束遗漏和重复工具调用。
+
+**追问：摘要本身被模型写错怎么办？**
+
+摘要不能成为唯一事实源。文件内容可重新读取，测试结果可重新执行，用户约束应保留原文或结构化字段；摘要只压缩可再生的过程信息。可以记录摘要覆盖的 sequence 区间和 source hash，便于定位偏差，但 hash 只能证明来源没换，不能证明摘要语义正确。
 
 **问：prompt cache 命中高，是否不用 compaction？**
 
 仍然需要。缓存主要影响费用和服务端计算，不能消除网络传输、context window、长历史干扰和隐私保留问题。命中率也由 provider 决定，不能作为 runtime 正确性的前提。
+
+**问：工具输出被截断后，模型会不会基于残缺信息做错？**
+
+会。输出上限是资源保护，不代表残缺 observation 足以决策。文件读取提供行数、大小和 head-tail 信息，命令结果保留退出码与截断元数据；模型可以缩小范围重新读取或换用更精确的命令。当前 runtime 没有自动判断“截断是否影响任务”，因为这需要理解语义。评测应加入大输出 case，检查模型是否主动收窄观察范围。
 
 ## 评测
 
 **问：怎样区分模型问题和 harness 问题？**
 
 固定模型、prompt、初始 fixture、预算和 grader，重复运行并比较成功率、turn、工具数、耗时和失败分类。模型从未提出正确行动，偏向模型或上下文；正确行动被参数层误拒、工具反馈被截断到无法使用、reasoning/tool result 没有续传，偏向 harness。外部 grader 必须独立于 final answer。
+
+**问：为什么主演示选 2048？这不就是生成静态网页吗？**
+
+任务的难点不在页面数量。纯引擎必须满足输入不可变、四方向变换、一次移动每个源 tile 只能合并一次、精确随机数调用次数和胜负状态；浏览器层还要接键盘、WASD、pointer swipe、localStorage、可访问状态和窄屏布局。Agent 需要从公开契约拆模块、实现、运行测试，再交付可操作页面。相比改一行代码，这条链路能同时展示推理、工具使用和最终产品体验。
+
+**问：`21/21` 能证明页面做得好吗？**
+
+它证明固定契约里的算法、DOM 入口、事件绑定、存储和关键 CSS 语义成立。hidden grader 使用静态 DOM/CSS 检查，没有证明逐像素质量、所有浏览器兼容性或真实触摸设备体验。视频里直接操作键盘、pointer、New Game 和 Best，补充了一个人工可用性样本；更强的版本应加入 Playwright 多 viewport 行为测试和视觉 diff。
+
+**问：hidden grader 怎样隔离？**
+
+Agent 启动前，workspace 里只有 README、package、启动脚本和 7 项公开测试。Agent 停止后，runner 才复制 14 项 hidden tests，并在新的 Node 进程里执行。README、package、启动脚本和公开测试的哈希也会复核。这个方案能防止直接读取 hidden 文件和简单改测试，仍不是对恶意进程的强隔离；严肃 benchmark 应把 grader 放进独立容器并只读挂载输入。
+
+**问：一次 2048 PASS 能报告成功率吗？**
+
+不能。正式样本只能说明这组模型、fixture、prompt 和预算下有一条成功链路：61.719 秒、12 turn、15 tools、`21/21`。成功率需要固定提交重复多次，并报告置信区间和失败分类。stale-timer 的五次实验用于展示这种做法，其中结果为 `4/5`，但任务不同，不能拿它替 2048 估计稳定性。
 
 **问：hidden grader 会不会只是你事后加规则让第一版失败？**
 
@@ -168,11 +230,11 @@ system prompt 明确普通文件和命令输出是数据，不能覆盖用户或
 
 **问：一次演示成功能说明什么？**
 
-只能证明这一条端到端链路在给定模型、fixture 和预算下有 `4/5` 的观测成功率。它不代表总体成功率，也不能从一个 cache case 外推到任意仓库。更多能力需要加入不同任务族，例如跨文件接口修改、依赖错误和大输出截断，并报告各自的样本量和失败分类。
+只能证明这条端到端链路在给定模型、fixture 和预算下成功过。它不代表总体成功率，也不能从一个网页任务外推到任意仓库。更完整的评测要加入跨文件接口修改、依赖错误、大输出截断和预算耗尽，并分别报告样本量、通过率和失败分类。
 
 **问：如何防模型修改测试骗过 grader？**
 
-runner 在执行前后对 README、package、tsconfig 和公开测试做 SHA-256 对比。hidden grader 在 Agent 结束后才复制进 workspace。它仍不是抗恶意模型的强隔离；模型可以改测试 runner 或源代码做环境探测。严肃 benchmark 应在独立容器中挂载只读 grader。
+2048 runner 在执行前后对 README、package、启动脚本和公开测试做 SHA-256 对比。hidden grader 在 Agent 结束后才复制进 workspace。它仍不是抗恶意模型的强隔离；模型可以修改其他运行入口或尝试环境探测。严肃 benchmark 应在独立容器中只读挂载输入，并把 grader 放在容器外执行。
 
 ## 如果继续做
 
