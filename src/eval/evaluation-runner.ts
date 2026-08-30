@@ -5,6 +5,10 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { main as runNash } from "../cli/main.js";
+import {
+  loadRuntimeConfig,
+  type ProviderRunOverrides,
+} from "../config/runtime-config.js";
 import { prepareStateDirectory } from "../session/session-paths.js";
 import { readTrace } from "../session/trace-reader.js";
 import { sanitizedEnvironment } from "../tools/run-command.js";
@@ -18,6 +22,14 @@ export interface EvaluationCase {
   readonly maxTurns: number;
   readonly maxTools: number;
   readonly maxDurationSeconds: number;
+  readonly provider?: ProviderRunOverrides;
+}
+
+export interface EvaluationProviderProfile {
+  readonly model: string;
+  readonly thinking: "enabled" | "disabled";
+  readonly reasoningEffort: "low" | "high" | "max";
+  readonly maxOutputTokens: number;
 }
 
 export interface EvaluationMetrics {
@@ -42,6 +54,7 @@ export interface EvaluationResult {
   readonly workspace: string;
   readonly trace: string | null;
   readonly metrics: EvaluationMetrics | null;
+  readonly provider: EvaluationProviderProfile;
 }
 
 export async function runEvaluation(
@@ -59,6 +72,15 @@ export async function runEvaluation(
   const fixture = path.join(caseRoot, "workspace");
   const graderFixture = path.join(caseRoot, "grader");
   const task = (await readFile(path.join(caseRoot, "task.txt"), "utf8")).trim();
+  const runtime = loadRuntimeConfig();
+  const provider: EvaluationProviderProfile = {
+    model: configuration.provider?.model ?? runtime.provider.model,
+    thinking: configuration.provider?.thinking ?? runtime.provider.thinking,
+    reasoningEffort:
+      configuration.provider?.reasoningEffort ?? runtime.provider.reasoningEffort,
+    maxOutputTokens:
+      configuration.provider?.maxOutputTokens ?? runtime.provider.maxOutputTokens,
+  };
   const runId = newSessionId();
   const repositoryWorkspace = await Workspace.open(repositoryRoot);
   const evaluationDirectory = await prepareStateDirectory(
@@ -92,6 +114,7 @@ export async function runEvaluation(
     String(configuration.maxTools),
     "--max-duration",
     String(configuration.maxDurationSeconds),
+    ...providerOverrideArguments(configuration.provider),
     task,
   ]);
 
@@ -127,6 +150,7 @@ export async function runEvaluation(
     workspace,
     trace,
     metrics,
+    provider,
   };
   await writeFile(
     path.join(runRoot, "result.json"),
@@ -147,6 +171,28 @@ export async function runEvaluation(
     ].join("\n"),
   );
   return result;
+}
+
+function providerOverrideArguments(
+  provider: ProviderRunOverrides | undefined,
+): string[] {
+  if (provider === undefined) {
+    return [];
+  }
+  const arguments_: string[] = [];
+  if (provider.model !== undefined) {
+    arguments_.push("--model", provider.model);
+  }
+  if (provider.thinking !== undefined) {
+    arguments_.push("--thinking", provider.thinking);
+  }
+  if (provider.reasoningEffort !== undefined) {
+    arguments_.push("--reasoning-effort", provider.reasoningEffort);
+  }
+  if (provider.maxOutputTokens !== undefined) {
+    arguments_.push("--max-output-tokens", String(provider.maxOutputTokens));
+  }
+  return arguments_;
 }
 
 export function runEvaluationEntry(configuration: EvaluationCase): void {

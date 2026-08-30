@@ -20,6 +20,7 @@ const GAME_2048_CASE: EvaluationCase = {
   maxTurns: 20,
   maxTools: 48,
   maxDurationSeconds: 360,
+  provider: { reasoningEffort: "low" },
 };
 
 export async function runGame2048Evaluation(): Promise<EvaluationResult> {

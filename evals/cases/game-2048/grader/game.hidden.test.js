@@ -389,8 +389,40 @@ test("the browser controller wires keyboard, swipe, storage, and scroll handling
   assert.match(app, /preventDefault\s*\(/, "handled keys must prevent page scrolling");
 });
 
-test("the stylesheet includes a responsive narrow-screen layout", async () => {
+test("the stylesheet keeps a four-column board usable on narrow screens", async () => {
   const styles = await readFile(new URL("../styles.css", import.meta.url), "utf8");
 
-  assert.match(styles, /@media\s*(?:screen\s+)?\(/i);
+  assert.match(
+    styles,
+    /grid-template-columns\s*:\s*repeat\(\s*4\s*,/i,
+    "the 2048 board must define a four-column CSS grid",
+  );
+
+  const hasNarrowScreenMediaQuery =
+    /@media\b[^{}]*(?:width|orientation)\s*(?::|[<>=])/i.test(styles);
+  const viewportWidthDeclarations = [
+    ...styles.matchAll(
+      /\b(?:width|inline-size)\s*:\s*([^;{}]*(?:vw|vmin|vmax|dvw|svw|lvw)[^;{}]*)[;}]/gi,
+    ),
+  ].map((match) => match[1]);
+  const hasBoundedViewportWidth =
+    viewportWidthDeclarations.some((value) =>
+      /\b(?:min|max|clamp|calc)\s*\(/i.test(value),
+    ) ||
+    (viewportWidthDeclarations.length > 0 &&
+      /\bmax-(?:width|inline-size)\s*:\s*[^;{}]+[;}]/i.test(styles));
+  const hasScalableType =
+    /font-size\s*:\s*[^;{}]*(?:clamp|min|max|calc)\s*\(/i.test(styles) ||
+    /font-size\s*:\s*[^;{}]*(?:vw|vmin|vmax|dvw|svw|lvw)/i.test(styles);
+  const hasSquareTiles = /aspect-ratio\s*:\s*1(?:\s*\/\s*1)?(?:\s*[;}])/i.test(
+    styles,
+  );
+  const hasFluidNarrowScreenLayout =
+    hasBoundedViewportWidth && (hasScalableType || hasSquareTiles);
+
+  assert.equal(
+    hasNarrowScreenMediaQuery || hasFluidNarrowScreenLayout,
+    true,
+    "styles.css must adapt to narrow screens with a responsive media query or a bounded viewport-relative layout with scalable type or square tiles",
+  );
 });
