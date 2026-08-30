@@ -25,10 +25,11 @@
 | --- | --- | --- |
 | 对话与上下文 | 完整 message history，保留 DeepSeek thinking 续传字段 | `src/agent`、`src/provider` |
 | 工具定义与本地执行 | 五个本地工具，严格参数解析，工作区路径策略 | `src/tools`、`src/workspace` |
-| 模型输出解析 | 手写 Chat Completions 请求和响应校验 | `src/provider/deepseek-chat-client.ts` |
-| 循环与终止 | 自由工具循环、七类硬预算、明确 stop reason | `src/agent/coding-agent.ts` |
+| 模型输出解析 | 手写 SSE、增量 tool call 聚合和完整响应校验 | `src/provider/deepseek-chat-client.ts` |
+| 交互反馈 | 可见正文流式输出、思考字符进度和分层工具卡片 | `src/cli/terminal-ui.ts` |
+| 循环与终止 | 自由工具循环、硬预算、输出续写和明确 stop reason | `src/agent/coding-agent.ts` |
 | 错误处理 | provider、协议、审批、工具、命令和 trace 错误分层 | 对应单元测试与 JSONL 事件 |
-| 真实任务 | stale-timer 五次固定提交评测，`4/5` 通过；成功样本 grader `7/7` | `evals/cases/stale-timer`、`docs/evaluation.md` |
+| 真实任务 | 完成 2048 网页，公开与隐藏测试共 `21/21`；stale-timer 保留重复评测 | `evals/cases/game-2048`、`docs/evaluation.md` |
 
 项目没有引入模型厂商 SDK，provider 直接使用 Node 原生 `fetch`。这比题目要求更严格，但属于实现选择，不作为额外规则要求其他方案。
 
@@ -36,11 +37,12 @@
 
 - [ ] GitHub 仓库保持 public，remote 为 `https://github.com/TmkShink/nash-agent`。
 - [ ] `git status` 干净，最终提交和 push 早于截止时间。
-- [ ] 对 Git 历史、已跟踪文件、`README.txt` 和视频画面做一次密钥扫描。
-- [ ] `README.txt` 少于 1000 个汉字，运行命令已经在干净环境验证。
-- [ ] 视频时长不超过 2 分钟，mp4 文件不超过 200 MB。
-- [ ] 视频中的运行结果来自真实会话；剪辑只裁停顿或加速，不伪造成功。
-- [ ] 压缩包以报名使用的真实姓名命名，并且只放 `README.txt` 和视频。
+- [x] 对 Git 历史、已跟踪文件、`README.txt` 和视频画面做一次密钥扫描。
+- [x] `README.txt` 少于 1000 个汉字，运行命令已经在干净环境验证。
+- [x] 视频时长不超过 2 分钟，mp4 文件不超过 200 MB。
+- [x] 视频从完整指令开始，输入后留出可见停顿，再展示真实 SSE、工具调用、独立 grader 和浏览器操作。
+- [x] 中文字幕只介绍 Nash 当前能力和画面事实，不包含研发迭代、问题复盘或未来计划。
+- [x] 压缩包以报名使用的真实姓名命名，并且只放 `README.txt` 和视频。
 
 ## 面试验收
 
