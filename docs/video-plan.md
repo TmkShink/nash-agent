@@ -1,50 +1,31 @@
 # 两分钟视频脚本
 
-## 只讲一条主线
+## 主线
 
-视频要证明 Nash 能完成真实代码修复，并让观众同时看到执行边界和可验证结果。架构只解释画面里已经发生的动作，不在两分钟内罗列所有功能。
+视频用一个真实代码修复会话说明 Nash 的三件事：模型能自主完成任务，runtime 能约束执行，结果能由独立 grader 和持久化轨迹复核。架构只解释画面里已经发生的动作，不在 107 秒内罗列全部功能。
 
-演示使用 `stale-timer`：旧 lease callback 已经出队，replacement 写入后再执行旧 callback，新值被误删。scheduler 还可能复用旧 handle，所以只比较 timer handle 仍然错误。这个任务短、确定、容易用一张时序图讲清，也能承接面试中的状态一致性追问。
+演示任务是 `stale-timer`。旧 lease 的回调已经出队；同一个 key 写入新值后，旧回调才开始执行。scheduler 还可能复用 timer handle，因此 handle 不能充当 lease 的代际标识。这个任务能自然引出状态一致性、隐藏测试和 Agent 评测稳定性。
 
-固定提交 `b537d34` 已完成五次真实运行：五次都在预算内结束，四次通过 hidden grader，耗时 p50 为 45.8 秒、p95 为 63.1 秒。视频展示一个真实成功会话，同时用一张结果卡说明 `4/5`，不把失败样本藏起来。
+视频没有配音。中文字幕陈述画面事实，面试时的现场讲解补充设计原因和取舍。
 
 ## 最终分镜
 
-| 时间 | 画面 | 旁白 |
+| 时间 | 画面 | 现场讲解重点 |
 | --- | --- | --- |
-| 0:00–0:07 | 标题、仓库名、失败测试一句话 | “Nash 是我从零实现的 TypeScript Coding Agent。这里让它修一个旧计时回调误删新值的竞态。” |
-| 0:07–0:17 | 极简架构图 | “模型自由选择动作；本地 runtime 负责工具、审批、硬预算和 JSONL 记录。” |
-| 0:17–1:05 | 实时执行 `npm run eval:stale-timer` | “它先读实现、需求和测试，真实复现失败，再做精确编辑。命令在隔离 fixture 中执行，API key 不会传给子进程。” |
-| 1:05–1:20 | 放大 generation diff | “修复没有依赖可复用的 timer handle，而是给每个 lease 分配单调 generation，旧 callback 只能删除自己那一代。” |
-| 1:20–1:35 | hidden grader `7/7` 和 protected files unchanged | “Agent 看不到 hidden grader。独立验证覆盖 handle 复用，并确认需求、配置和公开测试没有被改。” |
-| 1:35–1:52 | `nash inspect` 摘要和五次评测结果卡 | “这个会话的每次模型请求、工具结果和终止原因都能检查。固定条件五次有四次通过，一次违反契约也被 grader 留下。” |
-| 1:52–2:00 | 仓库地址与核心目录 | “仓库保留完整实现和测试，面试中我会重点解释重试边界、崩溃窗口和评测设计。” |
+| 0:00–0:06 | 项目名、真实评测提交 | “Nash 是我从零实现的 TypeScript Coding Agent，这段演示只讲一条真实修复链路。” |
+| 0:06–0:14 | runtime 边界图 | “模型选择下一步，本地 runtime 负责工具、审批、预算和持久化。” |
+| 0:14–0:44 | 标有“真实会话回放”的 replay | “这里按原始事件顺序回放已完成会话，不会重新执行工具，也没有伪装成在线调用。” |
+| 0:44–0:58 | baseline 与最终实现的 generation diff | “每次写入分配递增 generation，过期回调只删除自己创建的那一代。” |
+| 0:58–1:12 | 公开测试、hidden grader 和受保护文件结果 | “Agent 执行时看不到隐藏测试。独立 grader 专门覆盖 timer handle 复用，结果是 7/7。” |
+| 1:12–1:26 | `nash inspect` 摘要 | “JSONL 记录模型请求、工具结果和终止原因；这次运行是 45.8 秒、10 个 turn、13 次工具调用。” |
+| 1:26–1:40 | 固定提交五次评测表 | “同一提交连续运行五次，四次通过。失败样本也保留，用来说明公开测试通过仍可能违反契约。” |
+| 1:40–1:47.5 | 仓库地址与核心目录 | “代码、测试、评测脚本和提交历史都在仓库中，可以继续追问重试、崩溃窗口和安全边界。” |
 
-旁白按正常语速约 230 至 260 个汉字。录制时不要逐行念终端，只在动作切换时补一句。
+播放时不用逐字念字幕。架构段讲清责任边界，回放段说明证据来源，评测段主动解释 `4/5` 的局限，这三处最能体现项目判断力。
 
-## 录制命令
+## 真实会话
 
-先在单独终端进入 Nash 仓库，确认当前 commit、模型配置和测试：
-
-```bash
-git status --short
-npm run check
-npm run eval:stale-timer
-```
-
-runner 会打印 `<workspace>`、`<session-id>` 和 artifacts 路径。另开两个已经准备好的终端 tab：
-
-```bash
-# Tab 2：展示 baseline 与最终实现的差异
-git diff --no-index \
-  evals/cases/stale-timer/workspace/src/lease-cache.ts \
-  <workspace>/src/lease-cache.ts
-
-# Tab 3：展示会话摘要
-npm run dev -- inspect --workspace <workspace> <session-id>
-```
-
-已经验证的备用成功会话是：
+成片使用下面这条成功会话：
 
 ```bash
 npm run dev -- inspect \
@@ -57,45 +38,65 @@ npm run dev -- replay \
   20260829T173748Z-5262d710
 ```
 
-这个样本耗时 45.840 秒，包含 10 个 turn 和 13 次工具调用，使用 generation 修复，grader `7/7`。使用 replay 时，画面角标和旁白都要明确写“真实会话回放”。`.nash` 不入 Git，正式剪辑前不要清理这个本地 artifacts 目录。
+会话耗时 45.840 秒，包含 10 个 turn 和 13 次工具调用，最终采用 generation 修复，独立 grader `7/7`。回放只读取这条会话的 append-only JSONL，tool call 顺序和结果都来自原始运行。
 
-`git diff --no-index` 发现差异时退出码为 1，这是正常行为。录屏不要把它和测试失败混在同一画面。
+`git diff --no-index` 发现差异时退出码为 1，录制脚本保留它的输出，不把这个退出码当成测试失败。
 
-若需要剪去模型等待，可以对完整实时录屏的静止区间做 2 至 4 倍加速。保留 tool call 顺序和真实耗时摘要，不重新拼接一条不存在的运行轨迹。`replay --speed 8` 可作为备用素材，但画面和旁白必须明确写“会话回放”，不能冒充实时执行。
-
-## 开场时序图
-
-视频只保留下面这张图，展示 8 至 10 秒：
+## 开场边界图
 
 ```text
-DeepSeek -> CodingAgent -> ToolRegistry -> local workspace
-                    |
-                    +-> append-only JSONL -> inspect / replay
+DeepSeek Chat Completions
+           |
+           v
+      CodingAgent  ------>  append-only JSONL
+           |                         |
+           v                         v
+      ToolRegistry              inspect / replay
+  prepare -> approve -> execute
+           |
+           v
+     local workspace
 ```
 
-不在视频里展示完整类图。评委可以从 README 和现场提问进入代码细节。
+这张图回答两个常见追问：自主决策发生在模型侧；工作区限制、审批、预算、工具执行和审计发生在 runtime 侧。
 
 ## 稳定性结果
 
-固定以下条件已经连续运行五次：
+固定提交 `b537d34` 的五次运行使用相同 fixture、任务、公开测试、hidden grader 和预算。模型配置为 `deepseek-v4-flash`、thinking enabled、reasoning effort high。
 
-- 同一个 Git commit 和干净 fixture。
-- `deepseek-v4-flash`、thinking enabled、reasoning effort high。
-- 12 turns、24 tools、240 秒 wall-clock 上限。
-- 同一版公开测试、hidden grader 和受保护文件列表。
+五次都在预算内结束，四次 grader PASS。耗时 p50 为 45.840 秒，p95 为 63.078 秒。失败样本公开测试 `5/5`，但错误依赖 timer handle 唯一性，hidden grader 将其判为 `6/7`。五个样本只能支持本任务上的改进方向，不能外推为任意仓库的 80% 成功率。逐次数据见 [`evaluation.md`](evaluation.md)。
 
-结果为五次全部完成、四次 grader PASS，p50 45.840 秒，p95 63.078 秒，达到预设的 `4/5` 和 p95 不超过 90 秒门槛。失败样本公开测试 `5/5`，但错误依赖 timer handle 唯一性，hidden grader 将其判为 `6/7`。逐次数据和改进前的 `3/5` 探索组都记录在 [`evaluation.md`](evaluation.md)。
+## 制作与验收
+
+```bash
+bash video/capture.sh
+bash video/render.sh
+```
+
+录制脚本创建固定位置、118 列、28 行的专用 Terminal 窗口。渲染脚本裁出终端内容，把 SRT 生成的底部字幕轨和回放标签烧录进视频，再加入 AAC 静音轨。脚本针对当前 Retina 显示器使用固定裁切坐标；换显示器后应先抽帧校准。
+
+已验收成片参数：
+
+- 107.533 秒，4,426,781 字节。
+- 1920×1080、30fps、H.264、`yuv420p`。
+- AAC、48kHz、双声道静音轨。
+- 全片解码无错误，未检测到持续黑场。
+- 回放标签只在 14–44 秒显示。
+
+原始录屏和成片保存在 `.nash/video/<run-id>/`，不会进入 Git。可编辑字幕和制作脚本位于 [`video/`](../video)。
 
 ## 录制安全检查
 
-- 录制前确认 `.env.local` 被 Git 忽略且权限为 `0600`。
-- 不执行 `env`、`printenv`、`set`，不打开 `.env.local`，清空包含密钥的 shell history。
-- 使用专门的测试 key；视频完成后可轮换。
-- 关闭通知、浏览器密码提示和菜单栏中的个人信息。
-- 终端宽度至少 110 列，字号保证 1080p 下可读，关闭会改变布局的自动换行插件。
-- stderr 时间线与 stdout final answer 分开配色；不要使用会吞掉退出码的管道。
-- 保留未剪辑原片、最终成功 workspace、JSONL 和 result.json，便于现场说明。
+- `.env.local` 必须被 Git 忽略，权限保持 `0600`。
+- 不执行 `env`、`printenv`、`set`，不打开 `.env.local`。
+- 画面只保留固定裁切后的 Terminal 内容，不显示菜单栏、通知、浏览器或其他桌面。
+- 回放持续显示“真实会话回放”，避免把 replay 误解为实时模型调用。
+- 保留原始 workspace、JSONL、result.json 和未剪辑素材，便于面试现场复核。
 
-## 失败时怎么处理
+## 面试追问
 
-真实运行失败可以重新录，但要先根据 trace 分类：provider 暂时失败、模型修复错误、工具拒绝、超预算或 grader 失败。只有确认原因后再决定重跑或改代码。备用画面使用已经验证的 `replay`，并标明它是回放。任何版本都不能手工改终端输出或把不同会话的步骤拼成一次成功运行。
+- “为什么不录实时调用？”实时调用的等待时间和网络波动会挤占两分钟。回放来自一次完整真实运行，保留事件顺序和结果，同时明确标注 replay。实时性没有被当成项目能力来宣传。
+
+- “为什么展示 `4/5`？”单次成功说明功能能跑，重复运行才能暴露模型方差。外部 grader 还能识别 Agent 自称成功却违反契约的样本。保留失败证据比只展示一次成功更能说明评测设计。
+
+- “字幕会不会遮住关键输出？”终端裁切后专门保留 168 像素黑色区域，字幕轨只覆盖这块区域。代码、测试和统计表仍保持完整可读。

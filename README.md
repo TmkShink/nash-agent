@@ -79,7 +79,7 @@ npm run build
 
 ## 已知边界
 
-- shell 是宿主机进程，不是安全沙箱；审批只是授权边界。
+- shell 作为宿主机进程运行，不具备安全沙箱隔离；审批只提供授权边界。
 - shell pipeline 默认返回最后一个命令的退出码，`npm test | tail` 可能掩盖测试失败；关键验证应直接执行，或显式启用 pipefail。
 - JSONL replay 重放界面和事件，不重做文件、命令或网络副作用。
 - 崩溃可能发生在副作用完成、`tool_finished` 尚未落盘的窗口，此时只能标记悬空调用并请求人工确认。
@@ -99,6 +99,7 @@ npm run build
 - [DeepSeek 接入](docs/provider-deepseek.md)
 - [面试追问手册](docs/interview-guide.md)
 - [两分钟视频脚本](docs/video-plan.md)
+- [视频制作与验收](video/README.md)
 - [题目要求与验收](docs/requirements.md)
 
 ## License
