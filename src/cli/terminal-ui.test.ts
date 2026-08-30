@@ -151,6 +151,95 @@ test("TerminalUI renders tool lifecycle as a bounded card with sanitized output"
   assert.doesNotMatch(output.text, /hidden/);
 });
 
+test("TerminalUI throttles status redraws while preserving transition and final counts", async () => {
+  const event = eventSequence();
+  const output = new MemoryWritable();
+  let now = 1_000;
+  const ui = new TerminalUI(output, {
+    isTTY: true,
+    color: false,
+    now: () => now,
+  });
+  const clearLine = "\r\u001b[2K";
+
+  await ui.write(event("model_request_started", { turn: 1, attempt: 1 }));
+  assert.equal(occurrences(output.text, clearLine), 1);
+  assert.match(output.text, /◇ Thinking…$/);
+
+  for (let index = 0; index < 100; index++) {
+    ui.onModelStreamEvent({ type: "reasoning_delta", delta: "x" });
+  }
+  assert.equal(occurrences(output.text, clearLine), 1);
+
+  now = 1_079;
+  ui.onModelStreamEvent({ type: "reasoning_delta", delta: "y" });
+  assert.equal(occurrences(output.text, clearLine), 1);
+
+  now = 1_080;
+  ui.onModelStreamEvent({ type: "reasoning_delta", delta: "z" });
+  assert.equal(occurrences(output.text, clearLine), 2);
+  assert.match(output.text, /◇ Thinking… 102 chars$/);
+
+  for (let index = 0; index < 8; index++) {
+    ui.onModelStreamEvent({ type: "reasoning_delta", delta: "r" });
+  }
+  assert.equal(occurrences(output.text, clearLine), 2);
+
+  ui.onModelStreamEvent({
+    type: "tool_call_delta",
+    index: 0,
+    nameDelta: "run_command",
+    argumentsDelta: "{",
+  });
+  assert.equal(occurrences(output.text, clearLine), 3);
+  assert.match(
+    output.text,
+    /◇ Preparing Bash… 110 thinking chars · 1 argument chars$/,
+  );
+
+  for (let index = 0; index < 100; index++) {
+    ui.onModelStreamEvent({
+      type: "tool_call_delta",
+      index: 0,
+      argumentsDelta: "a",
+    });
+  }
+  assert.equal(occurrences(output.text, clearLine), 3);
+
+  now = 1_159;
+  ui.onModelStreamEvent({
+    type: "tool_call_delta",
+    index: 0,
+    argumentsDelta: "b",
+  });
+  assert.equal(occurrences(output.text, clearLine), 3);
+
+  now = 1_160;
+  ui.onModelStreamEvent({
+    type: "tool_call_delta",
+    index: 0,
+    argumentsDelta: "c",
+  });
+  assert.equal(occurrences(output.text, clearLine), 4);
+  assert.match(
+    output.text,
+    /◇ Preparing Bash… 110 thinking chars · 103 argument chars$/,
+  );
+
+  await ui.write(
+    event("model_response", {
+      turn: 1,
+      finishReason: "tool_calls",
+      content: null,
+      toolCalls: [
+        { id: "call-1", name: "run_command", arguments: "{}" },
+      ],
+    }),
+  );
+  assert.equal(occurrences(output.text, clearLine), 5);
+  assert.match(output.text, /◇ Thought 160ms · 110 chars\n$/);
+});
+
 test("TerminalUI non-TTY mode stays deterministic and ignores ephemeral deltas", async () => {
   const event = eventSequence();
   const output = new MemoryWritable();

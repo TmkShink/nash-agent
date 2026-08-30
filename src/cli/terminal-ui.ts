@@ -24,6 +24,8 @@ interface AttemptState {
   contentOpen: boolean;
   contentEndsWithNewline: boolean;
   statusVisible: boolean;
+  statusPhase: "thinking" | "preparing" | undefined;
+  lastStatusRenderedAt: number;
 }
 
 interface RunningTool {
@@ -41,6 +43,8 @@ const ANSI = {
   yellow: "\u001b[38;5;221m",
   violet: "\u001b[38;5;141m",
 } as const;
+
+const STATUS_REFRESH_INTERVAL_MS = 80;
 
 export class TerminalUI implements EventSink, ModelStreamObserver {
   readonly #output: Writable;
@@ -74,7 +78,7 @@ export class TerminalUI implements EventSink, ModelStreamObserver {
     switch (event.type) {
       case "reasoning_delta":
         attempt.reasoningCharacters += event.delta.length;
-        this.#replaceStatus(this.#thinkingStatus(attempt));
+        this.#replaceStatus("thinking", this.#thinkingStatus(attempt));
         return;
       case "content_delta": {
         if (!attempt.contentOpen) {
@@ -95,7 +99,10 @@ export class TerminalUI implements EventSink, ModelStreamObserver {
         }
         attempt.toolArgumentCharacters += event.argumentsDelta?.length ?? 0;
         if (!attempt.contentOpen) {
-          this.#replaceStatus(this.#toolPreparationStatus(attempt, event.index));
+          this.#replaceStatus(
+            "preparing",
+            this.#toolPreparationStatus(attempt, event.index),
+          );
         }
       }
     }
@@ -123,8 +130,10 @@ export class TerminalUI implements EventSink, ModelStreamObserver {
           contentOpen: false,
           contentEndsWithNewline: false,
           statusVisible: false,
+          statusPhase: undefined,
+          lastStatusRenderedAt: this.#now(),
         };
-        this.#replaceStatus(this.#thinkingStatus(this.#attempt));
+        this.#replaceStatus("thinking", this.#thinkingStatus(this.#attempt));
         return;
       case "model_request_failed":
         this.#finishFailedAttempt(
@@ -302,12 +311,26 @@ export class TerminalUI implements EventSink, ModelStreamObserver {
     return `${this.#paint("yellow", "◇ Thought")} ${this.#paint("dim", `${formatDuration(elapsed)} · ${formatCount(attempt.reasoningCharacters)} chars`)}`;
   }
 
-  #replaceStatus(text: string): void {
+  #replaceStatus(
+    phase: "thinking" | "preparing",
+    text: string,
+  ): void {
     const attempt = this.#attempt;
     if (attempt === undefined || attempt.contentOpen) {
       return;
     }
+    const now = this.#now();
+    const phaseChanged = attempt.statusPhase !== phase;
+    if (
+      attempt.statusVisible &&
+      !phaseChanged &&
+      now - attempt.lastStatusRenderedAt < STATUS_REFRESH_INTERVAL_MS
+    ) {
+      return;
+    }
     attempt.statusVisible = true;
+    attempt.statusPhase = phase;
+    attempt.lastStatusRenderedAt = now;
     this.#writeImmediate(`\r\u001b[2K${text}`);
   }
 
